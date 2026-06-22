@@ -3,7 +3,7 @@ name: Deploy
 on:
   push:
     branches:
-      - main
+      - master
 
 jobs:
   deploy:
@@ -15,8 +15,9 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT }}
           script: |
-            cd ${{ secrets.DEPLOY_PATH }}
-            git pull origin main
+            cd /srv/projects/bot/ai-movie-finder-bot
+            git pull origin master
             docker compose up -d --build
             docker image prune -f
