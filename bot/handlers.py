@@ -1,0 +1,271 @@
+import logging
+import os
+import re
+import tempfile
+
+from aiogram import F, Router
+from aiogram.filters import Command
+from aiogram.types import CallbackQuery, Message
+from sqlalchemy import func, select
+
+from bot.keyboards import language_keyboard, main_menu_keyboard, movie_result_keyboard
+from config import ADMIN_IDS
+from database.database import get_session
+from database.models import SearchHistory, User
+from services import openai_service, tmdb_service, video_service
+from services.video_service import VideoTooLongError
+from utils.helpers import (
+    FREE_DAILY_LIMIT,
+    can_search,
+    format_history,
+    get_or_create_user,
+    is_file_too_large,
+)
+from utils.i18n import LANGUAGES, all_variants, t, tmdb_language
+
+logger = logging.getLogger(__name__)
+router = Router()
+
+HISTORY_BUTTON_TEXTS = all_variants("menu_history")
+LANGUAGE_BUTTON_TEXTS = all_variants("menu_language")
+
+YOUTUBE_URL_PATTERN = re.compile(
+    r"(?:https?://)?(?:www\.|m\.)?(?:youtube\.com/shorts/[\w-]+|youtu\.be/[\w-]+|youtube\.com/watch\?v=[\w-]+)",
+    re.IGNORECASE,
+)
+
+
+@router.message(Command("start"))
+async def cmd_start(message: Message) -> None:
+    async with get_session() as session:
+        user = await get_or_create_user(
+            session, message.from_user.id, message.from_user.username, message.from_user.language_code
+        )
+    await message.answer(t("start", user.language), reply_markup=main_menu_keyboard(user.language))
+
+
+@router.message(Command("language"))
+@router.message(F.text.in_(LANGUAGE_BUTTON_TEXTS))
+async def cmd_language(message: Message) -> None:
+    async with get_session() as session:
+        user = await get_or_create_user(
+            session, message.from_user.id, message.from_user.username, message.from_user.language_code
+        )
+    await message.answer(t("choose_language", user.language), reply_markup=language_keyboard())
+
+
+@router.callback_query(F.data.startswith("lang:"))
+async def cb_set_language(callback: CallbackQuery) -> None:
+    lang = callback.data.split(":", 1)[1]
+    if lang not in LANGUAGES:
+        await callback.answer()
+        return
+
+    async with get_session() as session:
+        user = await get_or_create_user(
+            session, callback.from_user.id, callback.from_user.username, callback.from_user.language_code
+        )
+        user.language = lang
+        await session.commit()
+
+    await callback.message.edit_text(t("language_set", lang))
+    await callback.message.answer(t("start", lang), reply_markup=main_menu_keyboard(lang))
+    await callback.answer()
+
+
+@router.message(Command("history"))
+@router.message(F.text.in_(HISTORY_BUTTON_TEXTS))
+async def cmd_history(message: Message) -> None:
+    async with get_session() as session:
+        user = await get_or_create_user(
+            session, message.from_user.id, message.from_user.username, message.from_user.language_code
+        )
+        result = await session.execute(
+            select(SearchHistory)
+            .where(SearchHistory.user_id == user.id)
+            .order_by(SearchHistory.created_at.desc())
+            .limit(10)
+        )
+        entries = result.scalars().all()
+    await message.answer(format_history(entries, user.language))
+
+
+@router.message(Command("admin"))
+async def cmd_admin(message: Message) -> None:
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    async with get_session() as session:
+        total_users = (await session.execute(select(func.count(User.id)))).scalar_one()
+        total_searches = (await session.execute(select(func.count(SearchHistory.id)))).scalar_one()
+    await message.answer(f"👤 Total users: {total_users}\n🔍 Total searches: {total_searches}")
+
+
+def _format_movie_reply(ai_result: dict, tmdb_result: dict | None, lang: str) -> str:
+    if not ai_result.get("title"):
+        return t("not_identified", lang)
+
+    if not tmdb_result:
+        return (
+            f"🎬 {ai_result.get('title')} ({ai_result.get('year', '?')})\n\n"
+            f"{t('confidence_label', lang)}: {ai_result.get('confidence', '?')}\n\n"
+            f"{t('no_tmdb_details', lang)}"
+        )
+
+    genres = ", ".join(tmdb_result.get("genres", [])) or t("unknown", lang)
+    actors = ", ".join(tmdb_result.get("actors", [])) or t("unknown", lang)
+    return (
+        f"🎬 {tmdb_result['title']} ({tmdb_result.get('year', '?')})\n\n"
+        f"{t('genre_label', lang)}: {genres}\n"
+        f"{t('rating_label', lang)}: {tmdb_result.get('rating', '?')}/10\n"
+        f"{t('confidence_label', lang)}: {ai_result.get('confidence', '?')}\n\n"
+        f"{tmdb_result.get('description', '')}\n\n"
+        f"{t('cast_label', lang)}: {actors}"
+    )
+
+
+async def _save_history(session, user_id: int, file_type: str, ai_result: dict) -> None:
+    session.add(
+        SearchHistory(
+            user_id=user_id,
+            file_type=file_type,
+            movie_name=ai_result.get("title"),
+            confidence=ai_result.get("confidence"),
+        )
+    )
+    await session.commit()
+
+
+async def _deliver_result(message: Message, ai_result: dict, lang: str, file_type: str) -> None:
+    tmdb_result = None
+    if ai_result.get("title"):
+        tmdb_result = await tmdb_service.search_movie(
+            ai_result["title"], ai_result.get("year"), tmdb_language(lang)
+        )
+
+    async with get_session() as session:
+        user = await get_or_create_user(
+            session, message.from_user.id, message.from_user.username, message.from_user.language_code
+        )
+        await _save_history(session, user.id, file_type, ai_result)
+
+    reply_text = _format_movie_reply(ai_result, tmdb_result, lang)
+    keyboard = movie_result_keyboard(tmdb_result.get("trailer") if tmdb_result else None, lang)
+
+    if tmdb_result and tmdb_result.get("poster"):
+        await message.answer_photo(tmdb_result["poster"], caption=reply_text, reply_markup=keyboard)
+    else:
+        await message.answer(reply_text, reply_markup=keyboard)
+
+
+@router.message(F.photo)
+async def handle_photo(message: Message) -> None:
+    photo = message.photo[-1]
+
+    async with get_session() as session:
+        user = await get_or_create_user(
+            session, message.from_user.id, message.from_user.username, message.from_user.language_code
+        )
+        lang = user.language
+
+        if is_file_too_large(photo.file_size or 0):
+            await message.answer(t("file_too_large_image", lang))
+            return
+
+        if not await can_search(session, user):
+            await message.answer(t("limit_reached", lang, limit=FREE_DAILY_LIMIT))
+            return
+
+    status_msg = await message.answer(t("analyzing_image", lang))
+    try:
+        file = await message.bot.get_file(photo.file_id)
+        buffer = await message.bot.download_file(file.file_path)
+        ai_result = await openai_service.analyze_image(buffer.read())
+    except Exception:
+        logger.exception("Failed to analyze photo")
+        await status_msg.edit_text(t("image_error", lang))
+        return
+
+    await status_msg.delete()
+    await _deliver_result(message, ai_result, lang, "image")
+
+
+@router.message(F.video)
+async def handle_video(message: Message) -> None:
+    video = message.video
+
+    async with get_session() as session:
+        user = await get_or_create_user(
+            session, message.from_user.id, message.from_user.username, message.from_user.language_code
+        )
+        lang = user.language
+
+        if is_file_too_large(video.file_size or 0):
+            await message.answer(t("file_too_large_video", lang))
+            return
+
+        if not await can_search(session, user):
+            await message.answer(t("limit_reached", lang, limit=FREE_DAILY_LIMIT))
+            return
+
+    status_msg = await message.answer(t("analyzing_video", lang))
+    try:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            video_path = os.path.join(tmp_dir, "video.mp4")
+            file = await message.bot.get_file(video.file_id)
+            await message.bot.download_file(file.file_path, destination=video_path)
+
+            frame_paths = video_service.extract_frames(video_path, tmp_dir)
+            frame_results = []
+            for frame_path in frame_paths:
+                with open(frame_path, "rb") as f:
+                    frame_results.append(await openai_service.analyze_image(f.read()))
+
+        ai_result = openai_service.aggregate_frame_results(frame_results)
+    except Exception:
+        logger.exception("Failed to analyze video")
+        await status_msg.edit_text(t("video_error", lang))
+        return
+
+    await status_msg.delete()
+    await _deliver_result(message, ai_result, lang, "video")
+
+
+@router.message(F.text.regexp(YOUTUBE_URL_PATTERN))
+async def handle_youtube_link(message: Message) -> None:
+    match = YOUTUBE_URL_PATTERN.search(message.text)
+    url = match.group(0)
+    if not url.startswith("http"):
+        url = f"https://{url}"
+
+    async with get_session() as session:
+        user = await get_or_create_user(
+            session, message.from_user.id, message.from_user.username, message.from_user.language_code
+        )
+        lang = user.language
+
+        if not await can_search(session, user):
+            await message.answer(t("limit_reached", lang, limit=FREE_DAILY_LIMIT))
+            return
+
+    status_msg = await message.answer(t("analyzing_video", lang))
+    try:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            video_path = await video_service.fetch_youtube_video(url, tmp_dir)
+
+            frame_paths = video_service.extract_frames(video_path, tmp_dir)
+            frame_results = []
+            for frame_path in frame_paths:
+                with open(frame_path, "rb") as f:
+                    frame_results.append(await openai_service.analyze_image(f.read()))
+
+        ai_result = openai_service.aggregate_frame_results(frame_results)
+    except VideoTooLongError:
+        await status_msg.edit_text(t("video_too_long", lang))
+        return
+    except Exception:
+        logger.exception("Failed to analyze YouTube video")
+        await status_msg.edit_text(t("youtube_fetch_error", lang))
+        return
+
+    await status_msg.delete()
+    await _deliver_result(message, ai_result, lang, "youtube")
