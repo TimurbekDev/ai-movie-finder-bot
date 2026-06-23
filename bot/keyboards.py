@@ -3,12 +3,17 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardBu
 from utils.i18n import t
 
 
-def movie_result_keyboard(trailer_url: str | None, lang: str) -> InlineKeyboardMarkup | None:
-    if not trailer_url:
+def movie_result_keyboard(
+    trailer_url: str | None, watch_url: str | None, lang: str
+) -> InlineKeyboardMarkup | None:
+    rows = []
+    if trailer_url:
+        rows.append([InlineKeyboardButton(text=t("trailer_button", lang), url=trailer_url)])
+    if watch_url:
+        rows.append([InlineKeyboardButton(text=t("watch_button", lang), url=watch_url)])
+    if not rows:
         return None
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=t("trailer_button", lang), url=trailer_url)]]
-    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def main_menu_keyboard(lang: str) -> ReplyKeyboardMarkup:

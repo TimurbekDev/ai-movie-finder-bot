@@ -112,6 +112,8 @@ TEXTS: dict[str, dict[str, str]] = {
     "rating_label": {"en": "Rating", "ru": "Рейтинг", "uz": "Reyting"},
     "confidence_label": {"en": "Confidence", "ru": "Уверенность", "uz": "Ishonch"},
     "cast_label": {"en": "Cast", "ru": "Актёры", "uz": "Aktyorlar"},
+    "watch_label": {"en": "Where to watch", "ru": "Где смотреть", "uz": "Qayerda ko'rish"},
+    "watch_button": {"en": "🍿 Where to watch", "ru": "🍿 Где смотреть", "uz": "🍿 Qayerda ko'rish"},
     "unknown": {"en": "Unknown", "ru": "Неизвестно", "uz": "Noma'lum"},
     "menu_history": {"en": "📜 History", "ru": "📜 История", "uz": "📜 Tarix"},
     "menu_language": {"en": "🌐 Language", "ru": "🌐 Язык", "uz": "🌐 Til"},
@@ -121,6 +123,13 @@ TMDB_LANGUAGE_MAP = {
     "en": "en-US",
     "ru": "ru-RU",
     "uz": "en-US",  # TMDB has no Uzbek locale; fall back to English content
+}
+
+# Region for JustWatch/TMDB watch providers (streaming availability is region-specific).
+TMDB_REGION_MAP = {
+    "en": "US",
+    "ru": "RU",
+    "uz": "RU",  # No UZ catalog on JustWatch; RU market is the closest match for Uzbek users
 }
 
 
@@ -136,3 +145,7 @@ def all_variants(key: str) -> set[str]:
 
 def tmdb_language(lang: str) -> str:
     return TMDB_LANGUAGE_MAP.get(lang, "en-US")
+
+
+def tmdb_region(lang: str) -> str:
+    return TMDB_REGION_MAP.get(lang, "US")

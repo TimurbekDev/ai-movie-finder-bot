@@ -25,7 +25,7 @@ from utils.helpers import (
     get_top_movies,
     is_file_too_large,
 )
-from utils.i18n import LANGUAGES, all_variants, t, tmdb_language
+from utils.i18n import LANGUAGES, all_variants, t, tmdb_language, tmdb_region
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -185,7 +185,7 @@ def _format_movie_reply(ai_result: dict, tmdb_result: dict | None, lang: str) ->
 
     genres = ", ".join(tmdb_result.get("genres", [])) or t("unknown", lang)
     actors = ", ".join(tmdb_result.get("actors", [])) or t("unknown", lang)
-    return (
+    reply = (
         f"🎬 {tmdb_result['title']} ({tmdb_result.get('year', '?')})\n\n"
         f"{t('genre_label', lang)}: {genres}\n"
         f"{t('rating_label', lang)}: {tmdb_result.get('rating', '?')}/10\n"
@@ -193,6 +193,12 @@ def _format_movie_reply(ai_result: dict, tmdb_result: dict | None, lang: str) ->
         f"{tmdb_result.get('description', '')}\n\n"
         f"{t('cast_label', lang)}: {actors}"
     )
+
+    providers = tmdb_result.get("watch_providers") or []
+    if providers:
+        reply += f"\n{t('watch_label', lang)}: {', '.join(providers)}"
+
+    return reply
 
 
 async def _save_history(session, user_id: int, file_type: str, ai_result: dict) -> None:
@@ -211,7 +217,7 @@ async def _deliver_result(message: Message, ai_result: dict, lang: str, file_typ
     tmdb_result = None
     if ai_result.get("title"):
         tmdb_result = await tmdb_service.search_movie(
-            ai_result["title"], ai_result.get("year"), tmdb_language(lang)
+            ai_result["title"], ai_result.get("year"), tmdb_language(lang), tmdb_region(lang)
         )
 
     async with get_session() as session:
@@ -221,7 +227,11 @@ async def _deliver_result(message: Message, ai_result: dict, lang: str, file_typ
         await _save_history(session, user.id, file_type, ai_result)
 
     reply_text = _format_movie_reply(ai_result, tmdb_result, lang)
-    keyboard = movie_result_keyboard(tmdb_result.get("trailer") if tmdb_result else None, lang)
+    keyboard = movie_result_keyboard(
+        tmdb_result.get("trailer") if tmdb_result else None,
+        tmdb_result.get("watch_link") if tmdb_result else None,
+        lang,
+    )
 
     if tmdb_result and tmdb_result.get("poster"):
         await message.answer_photo(tmdb_result["poster"], caption=reply_text, reply_markup=keyboard)
@@ -289,10 +299,11 @@ async def handle_video(message: Message) -> None:
             await message.bot.download_file(file.file_path, destination=video_path)
 
             frame_paths = video_service.extract_frames(video_path, tmp_dir)
-            frame_results = []
+            frames = []
             for frame_path in frame_paths:
                 with open(frame_path, "rb") as f:
-                    frame_results.append(await openai_service.analyze_image(f.read()))
+                    frames.append(f.read())
+            frame_results = await openai_service.analyze_images(frames)
 
         ai_result = openai_service.aggregate_frame_results(frame_results)
     except Exception:
@@ -332,10 +343,11 @@ async def handle_video_link(message: Message) -> None:
             await message.answer_video(FSInputFile(video_path))
 
             frame_paths = video_service.extract_frames(video_path, tmp_dir)
-            frame_results = []
+            frames = []
             for frame_path in frame_paths:
                 with open(frame_path, "rb") as f:
-                    frame_results.append(await openai_service.analyze_image(f.read()))
+                    frames.append(f.read())
+            frame_results = await openai_service.analyze_images(frames)
 
         ai_result = openai_service.aggregate_frame_results(frame_results)
     except VideoTooLongError:

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import logging
@@ -13,7 +14,7 @@ client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 PROMPT = """Analyze this movie or TV show screenshot.
 
 Identify:
-- Movie or TV show name
+- The original / internationally-recognized title in English (best for database lookup)
 - Release year
 - Main actors visible or known for the scene
 - Brief scene description
@@ -21,7 +22,10 @@ Identify:
 Respond ONLY with valid JSON in this exact format:
 {"title": "...", "year": "...", "actors": ["...", "..."], "scene": "...", "confidence": "NN%"}
 
-If you cannot identify the movie or show, set "title" to null.
+Rules:
+- "title" must be the English/original title, not a translated one.
+- "year" must be a 4-digit release year or null.
+- If you cannot identify the movie or show, set "title" to null.
 """
 
 
@@ -49,6 +53,11 @@ async def analyze_image(image_bytes: bytes) -> dict:
     except Exception:
         logger.exception("OpenAI vision analysis failed")
         return {"title": None, "confidence": "0%"}
+
+
+async def analyze_images(images: list[bytes]) -> list[dict]:
+    """Analyzes frames concurrently instead of one-by-one to cut total latency."""
+    return await asyncio.gather(*(analyze_image(img) for img in images))
 
 
 def aggregate_frame_results(results: list[dict]) -> dict:
