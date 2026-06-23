@@ -7,7 +7,7 @@ import shutil
 import ffmpeg
 import yt_dlp
 
-from config import YOUTUBE_COOKIES_FILE
+from config import INSTAGRAM_COOKIES_FILE, YOUTUBE_COOKIES_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,10 @@ def _is_youtube_url(url: str) -> bool:
     return "youtube.com" in url or "youtu.be" in url
 
 
+def _is_instagram_url(url: str) -> bool:
+    return "instagram.com" in url
+
+
 def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> str:
     outtmpl = os.path.join(tmp_dir, "link_video.%(ext)s")
     ydl_opts = {
@@ -64,6 +68,8 @@ def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> str:
     }
     if _is_youtube_url(url) and YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
         ydl_opts["cookiefile"] = YOUTUBE_COOKIES_FILE
+    elif _is_instagram_url(url) and INSTAGRAM_COOKIES_FILE and os.path.exists(INSTAGRAM_COOKIES_FILE):
+        ydl_opts["cookiefile"] = INSTAGRAM_COOKIES_FILE
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
         duration = info.get("duration") or 0
