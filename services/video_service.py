@@ -50,6 +50,10 @@ def extract_frames(video_path: str, output_dir: str, timestamps: tuple[int, ...]
     return frame_paths
 
 
+def _is_youtube_url(url: str) -> bool:
+    return "youtube.com" in url or "youtu.be" in url
+
+
 def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> str:
     outtmpl = os.path.join(tmp_dir, "link_video.%(ext)s")
     ydl_opts = {
@@ -58,7 +62,7 @@ def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> str:
         "format": "mp4[height<=720]/best[height<=720]/best",
         "outtmpl": outtmpl,
     }
-    if YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
+    if _is_youtube_url(url) and YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
         ydl_opts["cookiefile"] = YOUTUBE_COOKIES_FILE
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
