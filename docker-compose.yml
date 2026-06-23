@@ -28,6 +28,8 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql+asyncpg://user:password@db:5432/movie_finder_bot
+    volumes:
+      - ./youtube_cookies.txt:/app/youtube_cookies.txt:ro
 
 volumes:
   db_data:
