@@ -9,6 +9,8 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://api.themoviedb.org/3"
 IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 
+_session = requests.Session()  # keep-alive across calls
+
 
 def _extract_watch_providers(details: dict, region: str) -> dict:
     """Pulls streaming/rent/buy provider names + JustWatch link for the given region."""
@@ -26,20 +28,44 @@ def _extract_watch_providers(details: dict, region: str) -> dict:
     return {"providers": names[:6], "link": region_data.get("link")}
 
 
-def _search_movie_sync(title: str, year: str | None, language: str, region: str) -> dict | None:
-    params = {"api_key": TMDB_API_KEY, "query": title, "language": language}
-    if year:
-        params["year"] = year
+def _search_multi_sync(title: str, year: str | None, language: str) -> list[dict]:
+    """Search movies AND TV in one call; retry without the year filter on empty."""
+    if not title:
+        return []
 
-    resp = requests.get(f"{BASE_URL}/search/movie", params=params, timeout=10)
-    resp.raise_for_status()
-    results = resp.json().get("results")
-    if not results:
-        return None
+    def _query(extra: dict) -> list[dict]:
+        resp = _session.get(
+            f"{BASE_URL}/search/multi",
+            params={"api_key": TMDB_API_KEY, "language": language, "query": title, **extra},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json().get("results", [])
 
-    movie_id = results[0]["id"]
-    details_resp = requests.get(
-        f"{BASE_URL}/movie/{movie_id}",
+    raw = _query({"year": year} if year else {})
+    if not raw and year:
+        raw = _query({})  # bad/missing AI year shouldn't kill the lookup
+
+    out = []
+    for r in raw:
+        media_type = r.get("media_type")
+        if media_type not in ("movie", "tv"):
+            continue  # skip person results
+        out.append(
+            {
+                "id": r["id"],
+                "media_type": media_type,
+                "title": r.get("title") or r.get("name"),
+                "year": (r.get("release_date") or r.get("first_air_date") or "")[:4],
+                "popularity": r.get("popularity") or 0.0,
+            }
+        )
+    return out
+
+
+def _details_sync(tmdb_id: int, media_type: str, language: str, region: str) -> dict | None:
+    resp = _session.get(
+        f"{BASE_URL}/{media_type}/{tmdb_id}",
         params={
             "api_key": TMDB_API_KEY,
             "language": language,
@@ -47,8 +73,8 @@ def _search_movie_sync(title: str, year: str | None, language: str, region: str)
         },
         timeout=10,
     )
-    details_resp.raise_for_status()
-    details = details_resp.json()
+    resp.raise_for_status()
+    details = resp.json()
 
     cast = [c["name"] for c in details.get("credits", {}).get("cast", [])[:5]]
 
@@ -59,10 +85,13 @@ def _search_movie_sync(title: str, year: str | None, language: str, region: str)
             break
 
     watch = _extract_watch_providers(details, region)
+    date = details.get("release_date") or details.get("first_air_date") or ""
 
     return {
-        "title": details.get("title"),
-        "year": (details.get("release_date") or "")[:4],
+        "tmdb_id": tmdb_id,
+        "media_type": media_type,
+        "title": details.get("title") or details.get("name"),
+        "year": date[:4],
         "genres": [g["name"] for g in details.get("genres", [])],
         "rating": details.get("vote_average"),
         "description": details.get("overview"),
@@ -74,11 +103,19 @@ def _search_movie_sync(title: str, year: str | None, language: str, region: str)
     }
 
 
-async def search_movie(
-    title: str, year: str | None = None, language: str = "en-US", region: str = "US"
+async def search_multi(title: str, year: str | None = None, language: str = "en-US") -> list[dict]:
+    try:
+        return await asyncio.to_thread(_search_multi_sync, title, year, language)
+    except Exception:
+        logger.exception("TMDB multi-search failed for title=%s year=%s", title, year)
+        return []
+
+
+async def get_details(
+    tmdb_id: int, media_type: str, language: str = "en-US", region: str = "US"
 ) -> dict | None:
     try:
-        return await asyncio.to_thread(_search_movie_sync, title, year, language, region)
+        return await asyncio.to_thread(_details_sync, tmdb_id, media_type, language, region)
     except Exception:
-        logger.exception("TMDB lookup failed for title=%s year=%s", title, year)
+        logger.exception("TMDB details failed for id=%s type=%s", tmdb_id, media_type)
         return None

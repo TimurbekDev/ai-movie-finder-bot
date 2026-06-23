@@ -13,7 +13,7 @@ from bot.keyboards import admin_panel_keyboard, language_keyboard, main_menu_key
 from config import ADMIN_IDS
 from database.database import get_session
 from database.models import SearchHistory
-from services import openai_service, tmdb_service, video_service
+from services import cache_service, image_service, openai_service, verifier, video_service
 from services.video_service import VideoTooLongError
 from utils.helpers import (
     FREE_DAILY_LIMIT,
@@ -172,14 +172,20 @@ async def cb_admin_panel(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-def _format_movie_reply(ai_result: dict, tmdb_result: dict | None, lang: str) -> str:
-    if not ai_result.get("title"):
+def _top_candidate(analysis: dict) -> dict | None:
+    candidates = analysis.get("candidates") or []
+    return candidates[0] if candidates else None
+
+
+def _format_movie_reply(analysis: dict, tmdb_result: dict | None, lang: str) -> str:
+    top = _top_candidate(analysis)
+    if not top:
         return t("not_identified", lang)
 
     if not tmdb_result:
         return (
-            f"🎬 {ai_result.get('title')} ({ai_result.get('year', '?')})\n\n"
-            f"{t('confidence_label', lang)}: {ai_result.get('confidence', '?')}\n\n"
+            f"🎬 {top.get('title')} ({top.get('year') or '?'})\n\n"
+            f"{t('confidence_label', lang)}: {top.get('confidence', '?')}%\n\n"
             f"{t('no_tmdb_details', lang)}"
         )
 
@@ -189,7 +195,7 @@ def _format_movie_reply(ai_result: dict, tmdb_result: dict | None, lang: str) ->
         f"🎬 {tmdb_result['title']} ({tmdb_result.get('year', '?')})\n\n"
         f"{t('genre_label', lang)}: {genres}\n"
         f"{t('rating_label', lang)}: {tmdb_result.get('rating', '?')}/10\n"
-        f"{t('confidence_label', lang)}: {ai_result.get('confidence', '?')}\n\n"
+        f"{t('confidence_label', lang)}: {tmdb_result.get('confidence', '?')}%\n\n"
         f"{tmdb_result.get('description', '')}\n\n"
         f"{t('cast_label', lang)}: {actors}"
     )
@@ -198,35 +204,45 @@ def _format_movie_reply(ai_result: dict, tmdb_result: dict | None, lang: str) ->
     if providers:
         reply += f"\n{t('watch_label', lang)}: {', '.join(providers)}"
 
+    alternatives = [a for a in (tmdb_result.get("alternatives") or []) if a]
+    if alternatives:
+        reply += f"\n\n{t('also_maybe', lang)}: {', '.join(alternatives)}"
+
     return reply
 
 
-async def _save_history(session, user_id: int, file_type: str, ai_result: dict) -> None:
+async def _save_history(
+    session, user_id: int, file_type: str, analysis: dict, tmdb_result: dict | None
+) -> None:
+    top = _top_candidate(analysis) or {}
+    name = (tmdb_result or {}).get("title") or top.get("title")
+    conf = (tmdb_result or {}).get("confidence")
     session.add(
         SearchHistory(
             user_id=user_id,
             file_type=file_type,
-            movie_name=ai_result.get("title"),
-            confidence=ai_result.get("confidence"),
+            movie_name=name,
+            confidence=str(conf) if conf is not None else None,
         )
     )
     await session.commit()
 
 
-async def _deliver_result(message: Message, ai_result: dict, lang: str, file_type: str) -> None:
+async def _deliver_result(message: Message, analysis: dict, lang: str, file_type: str) -> None:
+    candidates = analysis.get("candidates") or []
     tmdb_result = None
-    if ai_result.get("title"):
-        tmdb_result = await tmdb_service.search_movie(
-            ai_result["title"], ai_result.get("year"), tmdb_language(lang), tmdb_region(lang)
+    if candidates:
+        tmdb_result = await verifier.resolve(
+            candidates, language=tmdb_language(lang), region=tmdb_region(lang)
         )
 
     async with get_session() as session:
         user = await get_or_create_user(
             session, message.from_user.id, message.from_user.username, message.from_user.language_code
         )
-        await _save_history(session, user.id, file_type, ai_result)
+        await _save_history(session, user.id, file_type, analysis, tmdb_result)
 
-    reply_text = _format_movie_reply(ai_result, tmdb_result, lang)
+    reply_text = _format_movie_reply(analysis, tmdb_result, lang)
     keyboard = movie_result_keyboard(
         tmdb_result.get("trailer") if tmdb_result else None,
         tmdb_result.get("watch_link") if tmdb_result else None,
@@ -262,14 +278,31 @@ async def handle_photo(message: Message) -> None:
     try:
         file = await message.bot.get_file(photo.file_id)
         buffer = await message.bot.download_file(file.file_path)
-        ai_result = await openai_service.analyze_image(buffer.read())
+        processed = image_service.safe_preprocess(buffer.read())
+
+        ph = None
+        try:
+            ph = image_service.phash(processed)
+        except Exception:
+            logger.warning("pHash failed; skipping cache", exc_info=True)
+
+        analysis = None
+        if ph is not None:
+            async with get_session() as session:
+                analysis = await cache_service.lookup(session, ph)
+
+        if analysis is None:
+            analysis = await openai_service.analyze([processed])
+            if ph is not None and analysis.get("candidates"):
+                async with get_session() as session:
+                    await cache_service.store(session, ph, analysis)
     except Exception:
         logger.exception("Failed to analyze photo")
         await status_msg.edit_text(t("image_error", lang))
         return
 
     await status_msg.delete()
-    await _deliver_result(message, ai_result, lang, "image")
+    await _deliver_result(message, analysis, lang, "image")
 
 
 @router.message(F.video)
@@ -299,20 +332,20 @@ async def handle_video(message: Message) -> None:
             await message.bot.download_file(file.file_path, destination=video_path)
 
             frame_paths = video_service.extract_frames(video_path, tmp_dir)
-            frames = []
+            raw_frames = []
             for frame_path in frame_paths:
                 with open(frame_path, "rb") as f:
-                    frames.append(f.read())
-            frame_results = await openai_service.analyze_images(frames)
-
-        ai_result = openai_service.aggregate_frame_results(frame_results)
+                    raw_frames.append(f.read())
+            best_frames = image_service.select_best_frames(raw_frames, k=4)
+            frames = [image_service.safe_preprocess(f) for f in best_frames]
+            analysis = await openai_service.analyze(frames)
     except Exception:
         logger.exception("Failed to analyze video")
         await status_msg.edit_text(t("video_error", lang))
         return
 
     await status_msg.delete()
-    await _deliver_result(message, ai_result, lang, "video")
+    await _deliver_result(message, analysis, lang, "video")
 
 
 @router.message(F.text.regexp(VIDEO_LINK_PATTERN))
@@ -343,29 +376,29 @@ async def handle_video_link(message: Message) -> None:
             await message.answer_video(FSInputFile(video_path))
 
             frame_paths = video_service.extract_frames(video_path, tmp_dir)
-            frames = []
+            raw_frames = []
             for frame_path in frame_paths:
                 with open(frame_path, "rb") as f:
-                    frames.append(f.read())
-            frame_results = await openai_service.analyze_images(frames)
-
-        ai_result = openai_service.aggregate_frame_results(frame_results)
+                    raw_frames.append(f.read())
+            best_frames = image_service.select_best_frames(raw_frames, k=4)
+            frames = [image_service.safe_preprocess(f) for f in best_frames]
+            analysis = await openai_service.analyze(frames)
     except VideoTooLongError:
         await status_msg.edit_text(t("video_too_long", lang))
         return
     except Exception:
         logger.exception("Failed to fetch/analyze %s video", source)
-        ai_result = None
+        analysis = None
         if source == "youtube":
             try:
                 thumbnail = await video_service.fetch_youtube_thumbnail(url)
                 if thumbnail:
-                    ai_result = await openai_service.analyze_image(thumbnail)
+                    analysis = await openai_service.analyze([image_service.safe_preprocess(thumbnail)])
             except Exception:
                 logger.exception("YouTube thumbnail fallback failed")
-        if ai_result is None:
+        if not analysis or not analysis.get("candidates"):
             await status_msg.edit_text(t("link_fetch_error", lang))
             return
 
     await status_msg.delete()
-    await _deliver_result(message, ai_result, lang, source)
+    await _deliver_result(message, analysis, lang, source)

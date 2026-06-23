@@ -32,7 +32,16 @@ class VideoTooLongError(Exception):
     pass
 
 
-def extract_frames(video_path: str, output_dir: str, timestamps: tuple[int, ...] = (0, 5, 10, 15)) -> list[str]:
+def extract_frames(
+    video_path: str,
+    output_dir: str,
+    timestamps: tuple[int, ...] = (1, 3, 5, 8, 11, 14, 18, 22, 27, 33),
+) -> list[str]:
+    """Sample many candidate frames (skip 0s -> often black/logo).
+
+    The caller narrows these down with image_service.select_best_frames; seeks
+    past the clip end simply yield no frame and are skipped.
+    """
     os.makedirs(output_dir, exist_ok=True)
     frame_paths = []
     for i, ts in enumerate(timestamps, start=1):

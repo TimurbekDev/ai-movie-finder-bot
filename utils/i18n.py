@@ -113,6 +113,7 @@ TEXTS: dict[str, dict[str, str]] = {
     "confidence_label": {"en": "Confidence", "ru": "Уверенность", "uz": "Ishonch"},
     "cast_label": {"en": "Cast", "ru": "Актёры", "uz": "Aktyorlar"},
     "watch_label": {"en": "Where to watch", "ru": "Где смотреть", "uz": "Qayerda ko'rish"},
+    "also_maybe": {"en": "Maybe also", "ru": "Возможно также", "uz": "Balki yana"},
     "watch_button": {"en": "🍿 Where to watch", "ru": "🍿 Где смотреть", "uz": "🍿 Qayerda ko'rish"},
     "unknown": {"en": "Unknown", "ru": "Неизвестно", "uz": "Noma'lum"},
     "menu_history": {"en": "📜 History", "ru": "📜 История", "uz": "📜 Tarix"},
