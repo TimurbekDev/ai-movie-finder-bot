@@ -19,6 +19,7 @@ jobs:
           script: |
             set -e
             cd /srv/projects/bot/ai-movie-finder-bot
+            git checkout -- .
             git pull origin master
             docker compose up -d --build
             docker image prune -f
