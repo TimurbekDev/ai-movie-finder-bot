@@ -343,8 +343,17 @@ async def handle_video_link(message: Message) -> None:
         return
     except Exception:
         logger.exception("Failed to fetch/analyze %s video", source)
-        await status_msg.edit_text(t("link_fetch_error", lang))
-        return
+        ai_result = None
+        if source == "youtube":
+            try:
+                thumbnail = await video_service.fetch_youtube_thumbnail(url)
+                if thumbnail:
+                    ai_result = await openai_service.analyze_image(thumbnail)
+            except Exception:
+                logger.exception("YouTube thumbnail fallback failed")
+        if ai_result is None:
+            await status_msg.edit_text(t("link_fetch_error", lang))
+            return
 
     await status_msg.delete()
     await _deliver_result(message, ai_result, lang, source)

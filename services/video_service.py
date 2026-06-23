@@ -5,6 +5,7 @@ import os
 import shutil
 
 import ffmpeg
+import requests
 import yt_dlp
 
 from config import INSTAGRAM_COOKIES_FILE, YOUTUBE_COOKIES_FILE
@@ -87,3 +88,25 @@ def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> str:
 async def fetch_remote_video(url: str, tmp_dir: str, max_duration: int = MAX_LINK_VIDEO_DURATION_SEC) -> str:
     """Downloads a video from YouTube, Instagram (Reels/posts) or any other yt-dlp supported link."""
     return await asyncio.to_thread(_fetch_remote_video_sync, url, tmp_dir, max_duration)
+
+
+def _fetch_youtube_thumbnail_sync(url: str) -> bytes | None:
+    """Falls back to YouTube's public oEmbed thumbnail when yt-dlp gets bot-blocked.
+
+    Thumbnails are served from plain image CDN URLs with no bot/cookie checks,
+    so this keeps movie identification working even when full video download is blocked.
+    """
+    oembed = requests.get(
+        "https://www.youtube.com/oembed", params={"url": url, "format": "json"}, timeout=10
+    )
+    oembed.raise_for_status()
+    thumbnail_url = oembed.json().get("thumbnail_url")
+    if not thumbnail_url:
+        return None
+    image = requests.get(thumbnail_url, timeout=10)
+    image.raise_for_status()
+    return image.content
+
+
+async def fetch_youtube_thumbnail(url: str) -> bytes | None:
+    return await asyncio.to_thread(_fetch_youtube_thumbnail_sync, url)
