@@ -66,3 +66,47 @@ def format_history(entries: list[SearchHistory], lang: str) -> str:
     for i, entry in enumerate(entries, start=1):
         lines.append(f"{i}. {entry.movie_name or t('unknown', lang)}")
     return "\n".join(lines)
+
+
+async def get_overview_stats(session: AsyncSession) -> dict:
+    since = datetime.now(timezone.utc) - timedelta(days=1)
+    total_users = (await session.execute(select(func.count(User.id)))).scalar_one()
+    premium_users = (
+        await session.execute(select(func.count(User.id)).where(User.is_premium.is_(True)))
+    ).scalar_one()
+    new_users_today = (
+        await session.execute(select(func.count(User.id)).where(User.created_at >= since))
+    ).scalar_one()
+    total_searches = (await session.execute(select(func.count(SearchHistory.id)))).scalar_one()
+    searches_today = (
+        await session.execute(select(func.count(SearchHistory.id)).where(SearchHistory.created_at >= since))
+    ).scalar_one()
+    return {
+        "total_users": total_users,
+        "premium_users": premium_users,
+        "new_users_today": new_users_today,
+        "total_searches": total_searches,
+        "searches_today": searches_today,
+    }
+
+
+async def get_top_movies(session: AsyncSession, limit: int = 10) -> list[tuple[str, int]]:
+    result = await session.execute(
+        select(SearchHistory.movie_name, func.count(SearchHistory.id).label("cnt"))
+        .where(SearchHistory.movie_name.is_not(None))
+        .group_by(SearchHistory.movie_name)
+        .order_by(func.count(SearchHistory.id).desc())
+        .limit(limit)
+    )
+    return list(result.all())
+
+
+async def get_active_users(session: AsyncSession, limit: int = 10) -> list[tuple[str | None, int, int]]:
+    result = await session.execute(
+        select(User.username, User.telegram_id, func.count(SearchHistory.id).label("cnt"))
+        .join(SearchHistory, SearchHistory.user_id == User.id)
+        .group_by(User.id)
+        .order_by(func.count(SearchHistory.id).desc())
+        .limit(limit)
+    )
+    return list(result.all())

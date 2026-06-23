@@ -7,6 +7,8 @@ import shutil
 import ffmpeg
 import yt_dlp
 
+from config import YOUTUBE_COOKIES_FILE
+
 logger = logging.getLogger(__name__)
 
 MAX_LINK_VIDEO_DURATION_SEC = 180
@@ -56,6 +58,8 @@ def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> str:
         "format": "mp4[height<=720]/best[height<=720]/best",
         "outtmpl": outtmpl,
     }
+    if YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
+        ydl_opts["cookiefile"] = YOUTUBE_COOKIES_FILE
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
         duration = info.get("duration") or 0

@@ -6,19 +6,22 @@ import tempfile
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, FSInputFile, Message
-from sqlalchemy import func, select
+from sqlalchemy import select
 
-from bot.keyboards import language_keyboard, main_menu_keyboard, movie_result_keyboard
+from bot.keyboards import admin_panel_keyboard, language_keyboard, main_menu_keyboard, movie_result_keyboard
 from config import ADMIN_IDS
 from database.database import get_session
-from database.models import SearchHistory, User
+from database.models import SearchHistory
 from services import openai_service, tmdb_service, video_service
 from services.video_service import VideoTooLongError
 from utils.helpers import (
     FREE_DAILY_LIMIT,
     can_search,
     format_history,
+    get_active_users,
     get_or_create_user,
+    get_overview_stats,
+    get_top_movies,
     is_file_too_large,
 )
 from utils.i18n import LANGUAGES, all_variants, t, tmdb_language
@@ -100,14 +103,62 @@ async def cmd_history(message: Message) -> None:
     await message.answer(format_history(entries, user.language))
 
 
+def _format_overview(stats: dict) -> str:
+    return (
+        "📊 <b>Bot overview</b>\n\n"
+        f"👤 Total users: {stats['total_users']}\n"
+        f"🆕 New users today: {stats['new_users_today']}\n"
+        f"⭐ Premium users: {stats['premium_users']}\n\n"
+        f"🔍 Total searches: {stats['total_searches']}\n"
+        f"📅 Searches today: {stats['searches_today']}"
+    )
+
+
+def _format_top_movies(rows: list[tuple[str, int]]) -> str:
+    if not rows:
+        return "🎬 <b>Top movies</b>\n\nNo searches yet."
+    lines = ["🎬 <b>Top movies</b>\n"]
+    for i, (name, count) in enumerate(rows, start=1):
+        lines.append(f"{i}. {name} — {count}")
+    return "\n".join(lines)
+
+
+def _format_active_users(rows: list[tuple[str | None, int, int]]) -> str:
+    if not rows:
+        return "👥 <b>Active users</b>\n\nNo searches yet."
+    lines = ["👥 <b>Active users</b>\n"]
+    for i, (username, telegram_id, count) in enumerate(rows, start=1):
+        label = f"@{username}" if username else str(telegram_id)
+        lines.append(f"{i}. {label} — {count} searches")
+    return "\n".join(lines)
+
+
 @router.message(Command("admin"))
 async def cmd_admin(message: Message) -> None:
     if message.from_user.id not in ADMIN_IDS:
         return
     async with get_session() as session:
-        total_users = (await session.execute(select(func.count(User.id)))).scalar_one()
-        total_searches = (await session.execute(select(func.count(SearchHistory.id)))).scalar_one()
-    await message.answer(f"👤 Total users: {total_users}\n🔍 Total searches: {total_searches}")
+        stats = await get_overview_stats(session)
+    await message.answer(_format_overview(stats), reply_markup=admin_panel_keyboard())
+
+
+@router.callback_query(F.data.startswith("admin:"))
+async def cb_admin_panel(callback: CallbackQuery) -> None:
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer()
+        return
+
+    action = callback.data.split(":", 1)[1]
+    async with get_session() as session:
+        if action == "movies":
+            text = _format_top_movies(await get_top_movies(session))
+        elif action == "active":
+            text = _format_active_users(await get_active_users(session))
+        else:
+            text = _format_overview(await get_overview_stats(session))
+
+    await callback.message.edit_text(text, reply_markup=admin_panel_keyboard())
+    await callback.answer()
 
 
 def _format_movie_reply(ai_result: dict, tmdb_result: dict | None, lang: str) -> str:

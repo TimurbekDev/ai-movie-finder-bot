@@ -33,3 +33,18 @@ def language_keyboard() -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def admin_panel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📊 Overview", callback_data="admin:overview"),
+                InlineKeyboardButton(text="🎬 Top movies", callback_data="admin:movies"),
+            ],
+            [
+                InlineKeyboardButton(text="👥 Active users", callback_data="admin:active"),
+                InlineKeyboardButton(text="🔄 Refresh", callback_data="admin:overview"),
+            ],
+        ]
+    )

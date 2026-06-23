@@ -5,24 +5,27 @@ TEXTS: dict[str, dict[str, str]] = {
     "start": {
         "en": (
             "🎬 AI Movie Finder\n\n"
-            "Send a screenshot or short video\n"
-            "and I will find the movie name.\n\n"
-            "📸 Image\n"
-            "🎥 Video"
+            "Send me a movie screenshot, a short video, or a YouTube/Instagram link\n"
+            "and I will find the movie or show name.\n\n"
+            "📸 Screenshot\n"
+            "🎥 Video file\n"
+            "🔗 YouTube / Instagram Reels link"
         ),
         "ru": (
             "🎬 AI Movie Finder\n\n"
-            "Отправь скриншот или короткое видео,\n"
-            "и я найду название фильма.\n\n"
-            "📸 Фото\n"
-            "🎥 Видео"
+            "Отправь скриншот, короткое видео или ссылку с YouTube/Instagram,\n"
+            "и я найду название фильма или сериала.\n\n"
+            "📸 Скриншот\n"
+            "🎥 Видеофайл\n"
+            "🔗 Ссылка YouTube / Instagram Reels"
         ),
         "uz": (
             "🎬 AI Movie Finder\n\n"
-            "Skrinshot yoki qisqa video yubor,\n"
-            "men filmni topib beraman.\n\n"
-            "📸 Rasm\n"
-            "🎥 Video"
+            "Skrinshot, qisqa video yoki YouTube/Instagram havolasini yubor,\n"
+            "men film yoki serial nomini topib beraman.\n\n"
+            "📸 Skrinshot\n"
+            "🎥 Video fayl\n"
+            "🔗 YouTube / Instagram Reels havolasi"
         ),
     },
     "choose_language": {
@@ -86,9 +89,9 @@ TEXTS: dict[str, dict[str, str]] = {
         "uz": "Video juda uzun. 3 daqiqadan qisqaroq video yuboring.",
     },
     "link_fetch_error": {
-        "en": "Couldn't fetch that video. Check the link and try again.",
-        "ru": "Не удалось загрузить это видео. Проверьте ссылку и попробуйте снова.",
-        "uz": "Bu videoni yuklab bo'lmadi. Havolani tekshirib qaytadan urinib ko'ring.",
+        "en": "Couldn't fetch that video. Make sure it's a public YouTube or Instagram Reels link and try again.",
+        "ru": "Не удалось загрузить это видео. Убедитесь, что это публичная ссылка YouTube или Instagram Reels, и попробуйте снова.",
+        "uz": "Bu videoni yuklab bo'lmadi. Havola ochiq (public) YouTube yoki Instagram Reels havolasi ekanini tekshirib, qaytadan urinib ko'ring.",
     },
     "not_identified": {
         "en": "Sorry, I couldn't identify the movie from this. Try a clearer screenshot or video.",

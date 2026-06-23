@@ -12,6 +12,8 @@ async_session = async_sessionmaker(engine, expire_on_commit=False)
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        for index in Base.metadata.tables["search_history"].indexes:
+            await conn.run_sync(lambda c, idx=index: idx.create(c, checkfirst=True))
 
 
 @asynccontextmanager
