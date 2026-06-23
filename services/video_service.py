@@ -9,7 +9,7 @@ import yt_dlp
 
 logger = logging.getLogger(__name__)
 
-MAX_YOUTUBE_DURATION_SEC = 180
+MAX_LINK_VIDEO_DURATION_SEC = 180
 
 
 def _ensure_ffmpeg_on_path() -> None:
@@ -48,8 +48,8 @@ def extract_frames(video_path: str, output_dir: str, timestamps: tuple[int, ...]
     return frame_paths
 
 
-def _fetch_youtube_video_sync(url: str, tmp_dir: str, max_duration: int) -> str:
-    outtmpl = os.path.join(tmp_dir, "yt_video.%(ext)s")
+def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> str:
+    outtmpl = os.path.join(tmp_dir, "link_video.%(ext)s")
     ydl_opts = {
         "quiet": True,
         "noplaylist": True,
@@ -64,10 +64,11 @@ def _fetch_youtube_video_sync(url: str, tmp_dir: str, max_duration: int) -> str:
         ydl.download([url])
 
     for fname in os.listdir(tmp_dir):
-        if fname.startswith("yt_video."):
+        if fname.startswith("link_video."):
             return os.path.join(tmp_dir, fname)
-    raise RuntimeError("YouTube download produced no file")
+    raise RuntimeError("Video download produced no file")
 
 
-async def fetch_youtube_video(url: str, tmp_dir: str, max_duration: int = MAX_YOUTUBE_DURATION_SEC) -> str:
-    return await asyncio.to_thread(_fetch_youtube_video_sync, url, tmp_dir, max_duration)
+async def fetch_remote_video(url: str, tmp_dir: str, max_duration: int = MAX_LINK_VIDEO_DURATION_SEC) -> str:
+    """Downloads a video from YouTube, Instagram (Reels/posts) or any other yt-dlp supported link."""
+    return await asyncio.to_thread(_fetch_remote_video_sync, url, tmp_dir, max_duration)

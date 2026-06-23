@@ -1,3 +1,5 @@
+name: ai-movie-finder-bot
+
 services:
   db:
     image: postgres:16-alpine

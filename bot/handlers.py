@@ -5,7 +5,7 @@ import tempfile
 
 from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, FSInputFile, Message
 from sqlalchemy import func, select
 
 from bot.keyboards import language_keyboard, main_menu_keyboard, movie_result_keyboard
@@ -31,6 +31,16 @@ LANGUAGE_BUTTON_TEXTS = all_variants("menu_language")
 
 YOUTUBE_URL_PATTERN = re.compile(
     r"(?:https?://)?(?:www\.|m\.)?(?:youtube\.com/shorts/[\w-]+|youtu\.be/[\w-]+|youtube\.com/watch\?v=[\w-]+)",
+    re.IGNORECASE,
+)
+
+INSTAGRAM_URL_PATTERN = re.compile(
+    r"(?:https?://)?(?:www\.)?instagram\.com/(?:reel|reels|p|tv)/[\w-]+",
+    re.IGNORECASE,
+)
+
+VIDEO_LINK_PATTERN = re.compile(
+    f"(?:{YOUTUBE_URL_PATTERN.pattern})|(?:{INSTAGRAM_URL_PATTERN.pattern})",
     re.IGNORECASE,
 )
 
@@ -230,12 +240,13 @@ async def handle_video(message: Message) -> None:
     await _deliver_result(message, ai_result, lang, "video")
 
 
-@router.message(F.text.regexp(YOUTUBE_URL_PATTERN))
-async def handle_youtube_link(message: Message) -> None:
-    match = YOUTUBE_URL_PATTERN.search(message.text)
+@router.message(F.text.regexp(VIDEO_LINK_PATTERN))
+async def handle_video_link(message: Message) -> None:
+    match = VIDEO_LINK_PATTERN.search(message.text)
     url = match.group(0)
     if not url.startswith("http"):
         url = f"https://{url}"
+    source = "instagram" if INSTAGRAM_URL_PATTERN.search(url) else "youtube"
 
     async with get_session() as session:
         user = await get_or_create_user(
@@ -250,7 +261,9 @@ async def handle_youtube_link(message: Message) -> None:
     status_msg = await message.answer(t("analyzing_video", lang))
     try:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            video_path = await video_service.fetch_youtube_video(url, tmp_dir)
+            video_path = await video_service.fetch_remote_video(url, tmp_dir)
+
+            await message.answer_video(FSInputFile(video_path))
 
             frame_paths = video_service.extract_frames(video_path, tmp_dir)
             frame_results = []
@@ -263,9 +276,9 @@ async def handle_youtube_link(message: Message) -> None:
         await status_msg.edit_text(t("video_too_long", lang))
         return
     except Exception:
-        logger.exception("Failed to analyze YouTube video")
-        await status_msg.edit_text(t("youtube_fetch_error", lang))
+        logger.exception("Failed to fetch/analyze %s video", source)
+        await status_msg.edit_text(t("link_fetch_error", lang))
         return
 
     await status_msg.delete()
-    await _deliver_result(message, ai_result, lang, "youtube")
+    await _deliver_result(message, ai_result, lang, source)

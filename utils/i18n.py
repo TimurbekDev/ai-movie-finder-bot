@@ -85,10 +85,10 @@ TEXTS: dict[str, dict[str, str]] = {
         "ru": "Это видео слишком длинное. Отправьте ролик короче 3 минут.",
         "uz": "Video juda uzun. 3 daqiqadan qisqaroq video yuboring.",
     },
-    "youtube_fetch_error": {
-        "en": "Couldn't fetch that YouTube video. Check the link and try again.",
-        "ru": "Не удалось загрузить это видео с YouTube. Проверьте ссылку и попробуйте снова.",
-        "uz": "Bu YouTube videoni yuklab bo'lmadi. Havolani tekshirib qaytadan urinib ko'ring.",
+    "link_fetch_error": {
+        "en": "Couldn't fetch that video. Check the link and try again.",
+        "ru": "Не удалось загрузить это видео. Проверьте ссылку и попробуйте снова.",
+        "uz": "Bu videoni yuklab bo'lmadi. Havolani tekshirib qaytadan urinib ko'ring.",
     },
     "not_identified": {
         "en": "Sorry, I couldn't identify the movie from this. Try a clearer screenshot or video.",
