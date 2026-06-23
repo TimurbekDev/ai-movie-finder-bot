@@ -65,6 +65,7 @@ def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> str:
         "noplaylist": True,
         "format": "mp4[height<=720]/best[height<=720]/best",
         "outtmpl": outtmpl,
+        "remote_components": ["ejs:github"],
     }
     if _is_youtube_url(url) and YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
         ydl_opts["cookiefile"] = YOUTUBE_COOKIES_FILE

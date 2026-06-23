@@ -4,6 +4,7 @@ import re
 import tempfile
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, FSInputFile, Message
 from sqlalchemy import select
@@ -46,6 +47,12 @@ VIDEO_LINK_PATTERN = re.compile(
     f"(?:{YOUTUBE_URL_PATTERN.pattern})|(?:{INSTAGRAM_URL_PATTERN.pattern})",
     re.IGNORECASE,
 )
+
+ADMIN_MAX_LINK_DURATION_SEC = 24 * 3600
+
+
+def _is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
 
 
 @router.message(Command("start"))
@@ -157,7 +164,11 @@ async def cb_admin_panel(callback: CallbackQuery) -> None:
         else:
             text = _format_overview(await get_overview_stats(session))
 
-    await callback.message.edit_text(text, reply_markup=admin_panel_keyboard())
+    try:
+        await callback.message.edit_text(text, reply_markup=admin_panel_keyboard())
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
     await callback.answer()
 
 
@@ -227,12 +238,13 @@ async def handle_photo(message: Message) -> None:
             session, message.from_user.id, message.from_user.username, message.from_user.language_code
         )
         lang = user.language
+        is_admin = _is_admin(message.from_user.id)
 
-        if is_file_too_large(photo.file_size or 0):
+        if not is_admin and is_file_too_large(photo.file_size or 0):
             await message.answer(t("file_too_large_image", lang))
             return
 
-        if not await can_search(session, user):
+        if not is_admin and not await can_search(session, user):
             await message.answer(t("limit_reached", lang, limit=FREE_DAILY_LIMIT))
             return
 
@@ -259,12 +271,13 @@ async def handle_video(message: Message) -> None:
             session, message.from_user.id, message.from_user.username, message.from_user.language_code
         )
         lang = user.language
+        is_admin = _is_admin(message.from_user.id)
 
-        if is_file_too_large(video.file_size or 0):
+        if not is_admin and is_file_too_large(video.file_size or 0):
             await message.answer(t("file_too_large_video", lang))
             return
 
-        if not await can_search(session, user):
+        if not is_admin and not await can_search(session, user):
             await message.answer(t("limit_reached", lang, limit=FREE_DAILY_LIMIT))
             return
 
@@ -304,15 +317,17 @@ async def handle_video_link(message: Message) -> None:
             session, message.from_user.id, message.from_user.username, message.from_user.language_code
         )
         lang = user.language
+        is_admin = _is_admin(message.from_user.id)
 
-        if not await can_search(session, user):
+        if not is_admin and not await can_search(session, user):
             await message.answer(t("limit_reached", lang, limit=FREE_DAILY_LIMIT))
             return
 
     status_msg = await message.answer(t("analyzing_video", lang))
     try:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            video_path = await video_service.fetch_remote_video(url, tmp_dir)
+            max_duration = ADMIN_MAX_LINK_DURATION_SEC if is_admin else video_service.MAX_LINK_VIDEO_DURATION_SEC
+            video_path = await video_service.fetch_remote_video(url, tmp_dir, max_duration)
 
             await message.answer_video(FSInputFile(video_path))
 
