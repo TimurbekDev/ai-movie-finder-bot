@@ -8,8 +8,10 @@ services:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
       POSTGRES_DB: movie_finder_bot
-    ports:
-      - "5432:5432"
+    # DB reachable only on the internal Docker network (hostname "db").
+    # To access from host for debugging, bind to loopback only:
+    #   ports:
+    #     - "127.0.0.1:5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
