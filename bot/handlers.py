@@ -248,14 +248,14 @@ def _prepare_video_frames(video_path: str, tmp_dir: str) -> tuple[list[bytes], i
     return frames, ph
 
 
-async def _analyze_with_cache(frames: list[bytes], ph: int | None) -> dict:
+async def _analyze_with_cache(frames: list[bytes], ph: int | None, hint: str = "") -> dict:
     """pHash cache in front of the vision call; miss or no-hash falls through to AI."""
     if ph is not None:
         async with get_session() as session:
             cached = await cache_service.lookup(session, ph)
         if cached is not None:
             return cached
-    analysis = await openai_service.analyze(frames)
+    analysis = await openai_service.analyze(frames, ocr_text=hint)
     if ph is not None and analysis.get("candidates"):
         async with get_session() as session:
             await cache_service.store(session, ph, analysis)
@@ -399,7 +399,7 @@ async def handle_video_link(message: Message) -> None:
     try:
         with tempfile.TemporaryDirectory() as tmp_dir:
             max_duration = ADMIN_MAX_LINK_DURATION_SEC if is_admin else video_service.MAX_LINK_VIDEO_DURATION_SEC
-            video_path = await video_service.fetch_remote_video(url, tmp_dir, max_duration)
+            video_path, video_title = await video_service.fetch_remote_video(url, tmp_dir, max_duration)
 
             try:
                 await message.answer_video(FSInputFile(video_path))
@@ -408,7 +408,8 @@ async def handle_video_link(message: Message) -> None:
                 logger.warning("Could not send fetched video back to user", exc_info=True)
 
             frames, ph = await asyncio.to_thread(_prepare_video_frames, video_path, tmp_dir)
-            analysis = await _analyze_with_cache(frames, ph)
+            hint = f"Video title: {video_title}" if video_title else ""
+            analysis = await _analyze_with_cache(frames, ph, hint=hint)
     except VideoTooLongError:
         await status_msg.edit_text(t("video_too_long", lang))
         return
@@ -417,11 +418,14 @@ async def handle_video_link(message: Message) -> None:
         analysis = None
         if source == "youtube":
             try:
-                thumbnail = await video_service.fetch_youtube_thumbnail(url)
+                title, thumbnail = await video_service.fetch_youtube_oembed(url)
                 if thumbnail:
-                    analysis = await openai_service.analyze([image_service.safe_preprocess(thumbnail)])
+                    processed = await asyncio.to_thread(image_service.safe_preprocess, thumbnail)
+                    analysis = await openai_service.analyze(
+                        [processed], ocr_text=f"Video title: {title}" if title else ""
+                    )
             except Exception:
-                logger.exception("YouTube thumbnail fallback failed")
+                logger.exception("YouTube oEmbed fallback failed")
         if not analysis or not analysis.get("candidates"):
             await status_msg.edit_text(t("link_fetch_error", lang))
             return

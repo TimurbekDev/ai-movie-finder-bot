@@ -49,7 +49,10 @@ Output EXACTLY this JSON shape:
   ]
 }"""
 
-_USER_TEXT = "Identify this title. {n} frame(s) from the same scene/clip. OCR (may be empty/noisy): {ocr}"
+_USER_TEXT = (
+    "Identify this title. {n} frame(s) from the same scene/clip. "
+    "Context text (video title / OCR; may be empty, noisy or clickbait): {ocr}"
+)
 
 _RESPONSE_SCHEMA = {
     "type": "json_schema",

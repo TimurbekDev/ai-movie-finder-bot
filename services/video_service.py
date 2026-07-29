@@ -96,54 +96,97 @@ def _is_instagram_url(url: str) -> bool:
     return "instagram.com" in url
 
 
-def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> str:
-    outtmpl = os.path.join(tmp_dir, "link_video.%(ext)s")
-    ydl_opts = {
+def _cookiefile_for(url: str) -> str | None:
+    if _is_youtube_url(url) and YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
+        return YOUTUBE_COOKIES_FILE
+    if _is_instagram_url(url) and INSTAGRAM_COOKIES_FILE and os.path.exists(INSTAGRAM_COOKIES_FILE):
+        return INSTAGRAM_COOKIES_FILE
+    return None
+
+
+def _base_opts(tmp_dir: str) -> dict:
+    return {
         "quiet": True,
         "noplaylist": True,
         "format": "mp4[height<=720]/best[height<=720]/best",
-        "outtmpl": outtmpl,
+        "outtmpl": os.path.join(tmp_dir, "link_video.%(ext)s"),
         "remote_components": ["ejs:github"],
     }
-    if _is_youtube_url(url) and YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
-        ydl_opts["cookiefile"] = YOUTUBE_COOKIES_FILE
-    elif _is_instagram_url(url) and INSTAGRAM_COOKIES_FILE and os.path.exists(INSTAGRAM_COOKIES_FILE):
-        ydl_opts["cookiefile"] = INSTAGRAM_COOKIES_FILE
+
+
+def _attempt_download(url: str, ydl_opts: dict, tmp_dir: str, max_duration: int) -> tuple[str, str]:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
         duration = info.get("duration") or 0
         if duration > max_duration:
             raise VideoTooLongError(duration)
+        title = info.get("title") or ""
         ydl.download([url])
 
     for fname in os.listdir(tmp_dir):
-        if fname.startswith("link_video."):
-            return os.path.join(tmp_dir, fname)
+        if fname.startswith("link_video.") and not fname.endswith((".part", ".ytdl")):
+            return os.path.join(tmp_dir, fname), title
     raise RuntimeError("Video download produced no file")
 
 
-async def fetch_remote_video(url: str, tmp_dir: str, max_duration: int = MAX_LINK_VIDEO_DURATION_SEC) -> str:
-    """Downloads a video from YouTube, Instagram (Reels/posts) or any other yt-dlp supported link."""
+def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> tuple[str, str]:
+    cookiefile = _cookiefile_for(url)
+
+    attempts = [_base_opts(tmp_dir)]
+    if _is_youtube_url(url):
+        # TV/embedded player clients usually skip the "confirm you're not a bot"
+        # sign-in wall that hits datacenter IPs on the default web client.
+        attempts.append(
+            {
+                **_base_opts(tmp_dir),
+                "extractor_args": {"youtube": {"player_client": ["tv", "web_embedded"]}},
+            }
+        )
+    if cookiefile:
+        for opts in attempts:
+            opts["cookiefile"] = cookiefile
+
+    last_err: Exception | None = None
+    for i, ydl_opts in enumerate(attempts, start=1):
+        try:
+            return _attempt_download(url, ydl_opts, tmp_dir, max_duration)
+        except VideoTooLongError:
+            raise
+        except Exception as e:
+            last_err = e
+            logger.warning("yt-dlp attempt %d/%d failed for %s: %s", i, len(attempts), url, e)
+    raise last_err
+
+
+async def fetch_remote_video(
+    url: str, tmp_dir: str, max_duration: int = MAX_LINK_VIDEO_DURATION_SEC
+) -> tuple[str, str]:
+    """Download from YouTube/Instagram/any yt-dlp source -> (file path, video title)."""
     return await asyncio.to_thread(_fetch_remote_video_sync, url, tmp_dir, max_duration)
 
 
-def _fetch_youtube_thumbnail_sync(url: str) -> bytes | None:
-    """Falls back to YouTube's public oEmbed thumbnail when yt-dlp gets bot-blocked.
+def _fetch_youtube_oembed_sync(url: str) -> tuple[str, bytes | None]:
+    """Falls back to YouTube's public oEmbed data when yt-dlp gets bot-blocked.
 
-    Thumbnails are served from plain image CDN URLs with no bot/cookie checks,
-    so this keeps movie identification working even when full video download is blocked.
+    Thumbnails are served from plain image CDN URLs with no bot/cookie checks, and
+    the video title often names the movie outright -- both feed the identifier
+    even when full video download is blocked.
     """
     oembed = requests.get(
         "https://www.youtube.com/oembed", params={"url": url, "format": "json"}, timeout=10
     )
     oembed.raise_for_status()
-    thumbnail_url = oembed.json().get("thumbnail_url")
-    if not thumbnail_url:
-        return None
-    image = requests.get(thumbnail_url, timeout=10)
-    image.raise_for_status()
-    return image.content
+    data = oembed.json()
+    title = data.get("title") or ""
+
+    thumbnail = None
+    thumbnail_url = data.get("thumbnail_url")
+    if thumbnail_url:
+        image = requests.get(thumbnail_url, timeout=10)
+        image.raise_for_status()
+        thumbnail = image.content
+    return title, thumbnail
 
 
-async def fetch_youtube_thumbnail(url: str) -> bytes | None:
-    return await asyncio.to_thread(_fetch_youtube_thumbnail_sync, url)
+async def fetch_youtube_oembed(url: str) -> tuple[str, bytes | None]:
+    return await asyncio.to_thread(_fetch_youtube_oembed_sync, url)
