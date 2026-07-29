@@ -4,6 +4,10 @@ Avoids repeat AI/TMDB calls for the same (or near-identical) screenshot.
 Lookup uses Postgres bit_count over XOR for exact hamming distance (requires
 PostgreSQL 14+). Every operation is non-fatal: on any error it logs and behaves
 as a cache miss so the normal pipeline always proceeds.
+
+bit_count has no bigint overload in any Postgres version -- only bit and bytea --
+so the XOR result must be cast to bit(64) or every lookup raises UndefinedFunction
+and silently degrades into a permanent cache miss.
 """
 
 import json
@@ -27,8 +31,8 @@ async def lookup(session, phash: int) -> dict | None:
                     """
                     SELECT id, result_json
                     FROM identification_cache
-                    WHERE bit_count(phash # :q) <= :thr
-                    ORDER BY bit_count(phash # :q) ASC
+                    WHERE bit_count((phash # :q)::bit(64)) <= :thr
+                    ORDER BY bit_count((phash # :q)::bit(64)) ASC
                     LIMIT 1
                     """
                 ),

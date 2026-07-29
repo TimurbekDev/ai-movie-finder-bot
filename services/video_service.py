@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import ffmpeg
@@ -36,6 +37,41 @@ _ensure_ffmpeg_on_path()
 
 class VideoTooLongError(Exception):
     pass
+
+
+class YouTubeBlockedError(Exception):
+    """Raised without hitting the network while the bot-check breaker is open."""
+
+
+# YouTube bot-checks whole server IPs, so once it starts refusing, every further
+# attempt burns ~4s to fail identically. Trip a breaker and go straight to the
+# thumbnail path until the cooldown expires.
+_BOT_BLOCK_RE = re.compile(r"sign in to confirm|confirm you'?re not a bot", re.IGNORECASE)
+_YT_BREAKER_THRESHOLD = 3
+_YT_BREAKER_COOLDOWN_SEC = 30 * 60
+_yt_block_streak = 0
+_yt_breaker_until = 0.0
+
+
+def _yt_breaker_open() -> bool:
+    return time.monotonic() < _yt_breaker_until
+
+
+def _record_yt_outcome(blocked: bool) -> None:
+    global _yt_block_streak, _yt_breaker_until
+    if not blocked:
+        if _yt_block_streak or _yt_breaker_until:
+            logger.info("YouTube downloads working again; bot-check breaker reset")
+        _yt_block_streak, _yt_breaker_until = 0, 0.0
+        return
+    _yt_block_streak += 1
+    if _yt_block_streak >= _YT_BREAKER_THRESHOLD and not _yt_breaker_open():
+        _yt_breaker_until = time.monotonic() + _YT_BREAKER_COOLDOWN_SEC
+        logger.warning(
+            "YouTube bot-check hit %d times; skipping yt-dlp for %d min, using thumbnails",
+            _yt_block_streak,
+            _YT_BREAKER_COOLDOWN_SEC // 60,
+        )
 
 
 def _video_duration(video_path: str) -> float:
@@ -172,9 +208,13 @@ def _attempt_download(url: str, ydl_opts: dict, tmp_dir: str, max_duration: int)
 
 def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> tuple[str, str]:
     _log_pot_diag_once()
+    is_youtube = _is_youtube_url(url)
+    if is_youtube and _yt_breaker_open():
+        raise YouTubeBlockedError("bot-check breaker open; skipping yt-dlp")
+
     cookiefile = _cookiefile_for(url)
 
-    if _is_youtube_url(url):
+    if is_youtube:
         # Cookie-less first: stale cookies poison requests, and alternative player
         # clients (tv / embedded / android_vr) skip the sign-in bot wall that hits
         # datacenter IPs on the default web client. Cookies are the last resort.
@@ -194,12 +234,18 @@ def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> tuple
     last_err: Exception | None = None
     for i, ydl_opts in enumerate(attempts, start=1):
         try:
-            return _attempt_download(url, ydl_opts, tmp_dir, max_duration)
+            result = _attempt_download(url, ydl_opts, tmp_dir, max_duration)
+            if is_youtube:
+                _record_yt_outcome(blocked=False)
+            return result
         except VideoTooLongError:
             raise
         except Exception as e:
             last_err = e
             logger.warning("yt-dlp attempt %d/%d failed for %s: %s", i, len(attempts), url, e)
+
+    if is_youtube:
+        _record_yt_outcome(blocked=bool(_BOT_BLOCK_RE.search(str(last_err))))
     logger.error("All yt-dlp attempts failed for %s. PO-token status: %s", url, _pot_diagnostics())
     raise last_err
 

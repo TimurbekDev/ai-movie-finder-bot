@@ -15,7 +15,7 @@ from config import ADMIN_IDS
 from database.database import get_session
 from database.models import SearchHistory
 from services import cache_service, image_service, openai_service, verifier, video_service
-from services.video_service import VideoTooLongError
+from services.video_service import VideoTooLongError, YouTubeBlockedError
 from utils.helpers import (
     FREE_DAILY_LIMIT,
     can_search,
@@ -443,6 +443,12 @@ async def handle_video_link(message: Message) -> None:
     except VideoTooLongError:
         await status_msg.edit_text(t("video_too_long", lang))
         return
+    except YouTubeBlockedError:
+        logger.info("Skipping yt-dlp for %s (breaker open); using thumbnails", url)
+        analysis = await _identify_from_youtube_thumbnails(url)
+        if not analysis or not analysis.get("candidates"):
+            await status_msg.edit_text(t("link_fetch_error", lang))
+            return
     except Exception:
         logger.exception("Failed to fetch/analyze %s video", source)
         analysis = None
