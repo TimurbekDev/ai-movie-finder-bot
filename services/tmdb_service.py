@@ -28,34 +28,53 @@ def _extract_watch_providers(details: dict, region: str) -> dict:
     return {"providers": names[:6], "link": region_data.get("link")}
 
 
-def _search_multi_sync(title: str, year: str | None, language: str) -> list[dict]:
-    """Search movies AND TV in one call; retry without the year filter on empty."""
+def _search_sync(title: str, year: str | None, media_type: str | None, language: str) -> list[dict]:
+    """Type-aware search; retry without the year filter on empty.
+
+    /search/multi silently ignores year params, so when the AI committed to a
+    media type we use /search/movie or /search/tv where the year filter works.
+    """
     if not title:
         return []
 
+    if media_type == "movie":
+        endpoint, year_param = "/search/movie", "primary_release_year"
+    elif media_type == "tv":
+        endpoint, year_param = "/search/tv", "first_air_date_year"
+    else:
+        endpoint, year_param = "/search/multi", None
+
     def _query(extra: dict) -> list[dict]:
         resp = _session.get(
-            f"{BASE_URL}/search/multi",
-            params={"api_key": TMDB_API_KEY, "language": language, "query": title, **extra},
+            f"{BASE_URL}{endpoint}",
+            params={
+                "api_key": TMDB_API_KEY,
+                "language": language,
+                "query": title,
+                "include_adult": "false",
+                **extra,
+            },
             timeout=10,
         )
         resp.raise_for_status()
         return resp.json().get("results", [])
 
-    raw = _query({"year": year} if year else {})
-    if not raw and year:
+    use_year = bool(year and year_param)
+    raw = _query({year_param: year}) if use_year else _query({})
+    if not raw and use_year:
         raw = _query({})  # bad/missing AI year shouldn't kill the lookup
 
     out = []
     for r in raw:
-        media_type = r.get("media_type")
-        if media_type not in ("movie", "tv"):
+        rtype = r.get("media_type") or media_type
+        if rtype not in ("movie", "tv"):
             continue  # skip person results
         out.append(
             {
                 "id": r["id"],
-                "media_type": media_type,
+                "media_type": rtype,
                 "title": r.get("title") or r.get("name"),
+                "original_title": r.get("original_title") or r.get("original_name"),
                 "year": (r.get("release_date") or r.get("first_air_date") or "")[:4],
                 "popularity": r.get("popularity") or 0.0,
             }
@@ -103,11 +122,16 @@ def _details_sync(tmdb_id: int, media_type: str, language: str, region: str) -> 
     }
 
 
-async def search_multi(title: str, year: str | None = None, language: str = "en-US") -> list[dict]:
+async def search(
+    title: str,
+    year: str | None = None,
+    media_type: str | None = None,
+    language: str = "en-US",
+) -> list[dict]:
     try:
-        return await asyncio.to_thread(_search_multi_sync, title, year, language)
+        return await asyncio.to_thread(_search_sync, title, year, media_type, language)
     except Exception:
-        logger.exception("TMDB multi-search failed for title=%s year=%s", title, year)
+        logger.exception("TMDB search failed for title=%s year=%s type=%s", title, year, media_type)
         return []
 
 

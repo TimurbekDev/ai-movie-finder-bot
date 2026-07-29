@@ -32,19 +32,38 @@ class VideoTooLongError(Exception):
     pass
 
 
-def extract_frames(
-    video_path: str,
-    output_dir: str,
-    timestamps: tuple[int, ...] = (1, 3, 5, 8, 11, 14, 18, 22, 27, 33),
-) -> list[str]:
-    """Sample many candidate frames (skip 0s -> often black/logo).
+def _video_duration(video_path: str) -> float:
+    try:
+        return float(ffmpeg.probe(video_path)["format"]["duration"])
+    except Exception:
+        logger.warning("ffprobe failed for %s; falling back to blind seeks", video_path)
+        return 0.0
+
+
+def _sample_timestamps(duration: float, max_frames: int) -> list[float]:
+    """Evenly spaced seeks across the clip, avoiding intro/outro edges."""
+    if duration <= 0:
+        # Unknown duration: probe a few early offsets blindly (skip 0s -> often black/logo).
+        return [1.0, 3.0, 6.0, 10.0, 15.0, 21.0]
+    if duration <= 2:
+        return [0.0, max(duration - 0.2, 0.1)]
+    start = max(1.0, duration * 0.05)
+    end = duration * 0.95
+    n = max(4, min(max_frames, int(duration / 3)))
+    step = (end - start) / max(n - 1, 1)
+    return [round(start + i * step, 2) for i in range(n)]
+
+
+def extract_frames(video_path: str, output_dir: str, max_frames: int = 10) -> list[str]:
+    """Sample candidate frames spread over the whole clip.
 
     The caller narrows these down with image_service.select_best_frames; seeks
     past the clip end simply yield no frame and are skipped.
     """
     os.makedirs(output_dir, exist_ok=True)
+    duration = _video_duration(video_path)
     frame_paths = []
-    for i, ts in enumerate(timestamps, start=1):
+    for i, ts in enumerate(_sample_timestamps(duration, max_frames), start=1):
         out_path = os.path.join(output_dir, f"frame{i}.jpg")
         try:
             (
@@ -57,6 +76,15 @@ def extract_frames(
                 frame_paths.append(out_path)
         except ffmpeg.Error:
             logger.exception("Failed to extract frame at %ss", ts)
+
+    if not frame_paths:  # last resort: very first frame
+        out_path = os.path.join(output_dir, "frame0.jpg")
+        try:
+            ffmpeg.input(video_path).output(out_path, vframes=1).overwrite_output().run(quiet=True)
+            if os.path.exists(out_path):
+                frame_paths.append(out_path)
+        except ffmpeg.Error:
+            logger.exception("Failed to extract fallback frame")
     return frame_paths
 
 

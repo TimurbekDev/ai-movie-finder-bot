@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import re
@@ -49,6 +50,7 @@ VIDEO_LINK_PATTERN = re.compile(
 )
 
 ADMIN_MAX_LINK_DURATION_SEC = 24 * 3600
+TG_CAPTION_LIMIT = 1024
 
 
 def _is_admin(user_id: int) -> bool:
@@ -228,6 +230,38 @@ async def _save_history(
     await session.commit()
 
 
+def _prepare_video_frames(video_path: str, tmp_dir: str) -> tuple[list[bytes], int | None]:
+    """CPU/subprocess-heavy frame pipeline; run via asyncio.to_thread only."""
+    frame_paths = video_service.extract_frames(video_path, tmp_dir)
+    raw_frames = []
+    for frame_path in frame_paths:
+        with open(frame_path, "rb") as f:
+            raw_frames.append(f.read())
+    best_frames = image_service.select_best_frames(raw_frames, k=4)
+    frames = [image_service.safe_preprocess(f) for f in best_frames]
+    ph = None
+    if frames:
+        try:
+            ph = image_service.phash(frames[0])
+        except Exception:
+            logger.warning("pHash failed for video frame; skipping cache", exc_info=True)
+    return frames, ph
+
+
+async def _analyze_with_cache(frames: list[bytes], ph: int | None) -> dict:
+    """pHash cache in front of the vision call; miss or no-hash falls through to AI."""
+    if ph is not None:
+        async with get_session() as session:
+            cached = await cache_service.lookup(session, ph)
+        if cached is not None:
+            return cached
+    analysis = await openai_service.analyze(frames)
+    if ph is not None and analysis.get("candidates"):
+        async with get_session() as session:
+            await cache_service.store(session, ph, analysis)
+    return analysis
+
+
 async def _deliver_result(message: Message, analysis: dict, lang: str, file_type: str) -> None:
     candidates = analysis.get("candidates") or []
     tmdb_result = None
@@ -250,9 +284,15 @@ async def _deliver_result(message: Message, analysis: dict, lang: str, file_type
     )
 
     if tmdb_result and tmdb_result.get("poster"):
-        await message.answer_photo(tmdb_result["poster"], caption=reply_text, reply_markup=keyboard)
-    else:
-        await message.answer(reply_text, reply_markup=keyboard)
+        caption = reply_text
+        if len(caption) > TG_CAPTION_LIMIT:
+            caption = caption[: TG_CAPTION_LIMIT - 1] + "…"
+        try:
+            await message.answer_photo(tmdb_result["poster"], caption=caption, reply_markup=keyboard)
+            return
+        except TelegramBadRequest:
+            logger.warning("Poster send failed; falling back to text", exc_info=True)
+    await message.answer(reply_text, reply_markup=keyboard)
 
 
 @router.message(F.photo)
@@ -278,24 +318,18 @@ async def handle_photo(message: Message) -> None:
     try:
         file = await message.bot.get_file(photo.file_id)
         buffer = await message.bot.download_file(file.file_path)
-        processed = image_service.safe_preprocess(buffer.read())
+        raw = buffer.read()
 
-        ph = None
-        try:
-            ph = image_service.phash(processed)
-        except Exception:
-            logger.warning("pHash failed; skipping cache", exc_info=True)
+        def _prepare() -> tuple[bytes, int | None]:
+            processed = image_service.safe_preprocess(raw)
+            try:
+                return processed, image_service.phash(processed)
+            except Exception:
+                logger.warning("pHash failed; skipping cache", exc_info=True)
+                return processed, None
 
-        analysis = None
-        if ph is not None:
-            async with get_session() as session:
-                analysis = await cache_service.lookup(session, ph)
-
-        if analysis is None:
-            analysis = await openai_service.analyze([processed])
-            if ph is not None and analysis.get("candidates"):
-                async with get_session() as session:
-                    await cache_service.store(session, ph, analysis)
+        processed, ph = await asyncio.to_thread(_prepare)
+        analysis = await _analyze_with_cache([processed], ph)
     except Exception:
         logger.exception("Failed to analyze photo")
         await status_msg.edit_text(t("image_error", lang))
@@ -331,14 +365,8 @@ async def handle_video(message: Message) -> None:
             file = await message.bot.get_file(video.file_id)
             await message.bot.download_file(file.file_path, destination=video_path)
 
-            frame_paths = video_service.extract_frames(video_path, tmp_dir)
-            raw_frames = []
-            for frame_path in frame_paths:
-                with open(frame_path, "rb") as f:
-                    raw_frames.append(f.read())
-            best_frames = image_service.select_best_frames(raw_frames, k=4)
-            frames = [image_service.safe_preprocess(f) for f in best_frames]
-            analysis = await openai_service.analyze(frames)
+            frames, ph = await asyncio.to_thread(_prepare_video_frames, video_path, tmp_dir)
+            analysis = await _analyze_with_cache(frames, ph)
     except Exception:
         logger.exception("Failed to analyze video")
         await status_msg.edit_text(t("video_error", lang))
@@ -373,16 +401,14 @@ async def handle_video_link(message: Message) -> None:
             max_duration = ADMIN_MAX_LINK_DURATION_SEC if is_admin else video_service.MAX_LINK_VIDEO_DURATION_SEC
             video_path = await video_service.fetch_remote_video(url, tmp_dir, max_duration)
 
-            await message.answer_video(FSInputFile(video_path))
+            try:
+                await message.answer_video(FSInputFile(video_path))
+            except Exception:
+                # Echoing the clip back is a nicety; never let it kill identification.
+                logger.warning("Could not send fetched video back to user", exc_info=True)
 
-            frame_paths = video_service.extract_frames(video_path, tmp_dir)
-            raw_frames = []
-            for frame_path in frame_paths:
-                with open(frame_path, "rb") as f:
-                    raw_frames.append(f.read())
-            best_frames = image_service.select_best_frames(raw_frames, k=4)
-            frames = [image_service.safe_preprocess(f) for f in best_frames]
-            analysis = await openai_service.analyze(frames)
+            frames, ph = await asyncio.to_thread(_prepare_video_frames, video_path, tmp_dir)
+            analysis = await _analyze_with_cache(frames, ph)
     except VideoTooLongError:
         await status_msg.edit_text(t("video_too_long", lang))
         return

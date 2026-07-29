@@ -30,4 +30,10 @@ class ThrottlingMiddleware(BaseMiddleware):
         if now - self._last_call[user_id] < self.rate_limit:
             return None
         self._last_call[user_id] = now
+
+        if len(self._last_call) > 10_000:  # bound memory on long uptimes
+            cutoff = now - self.rate_limit
+            self._last_call = defaultdict(
+                float, {uid: ts for uid, ts in self._last_call.items() if ts > cutoff}
+            )
         return await handler(event, data)

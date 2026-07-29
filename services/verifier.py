@@ -7,8 +7,10 @@ agreement -- not the model's self-reported number.
 
 Two-pass to bound cost: a cheap prelim score (no extra API calls) ranks all hits,
 then full details (which include credits) are fetched only for the top few.
+All independent TMDB calls run concurrently.
 """
 
+import asyncio
 import logging
 
 from rapidfuzz import fuzz
@@ -46,9 +48,18 @@ def _media_score(ai_media, tmdb_media) -> float:
     return 1.0 if ai_media == tmdb_media else 0.4
 
 
-def _title_sim(cand: dict, tmdb_title: str) -> float:
-    candidates = [cand.get("title", "")] + list(cand.get("alternative_titles") or [])
-    best = max((fuzz.token_set_ratio(c or "", tmdb_title or "") for c in candidates), default=0)
+def _title_sim(cand: dict, hit: dict) -> float:
+    """Best fuzzy match across AI title+alternatives vs TMDB localized+original title.
+
+    The localized TMDB title (e.g. ru-RU) rarely matches the AI's English title,
+    so the original title must participate or correct hits get buried.
+    """
+    ai_titles = [cand.get("title", "")] + list(cand.get("alternative_titles") or [])
+    tmdb_titles = [t for t in (hit.get("title"), hit.get("original_title")) if t]
+    best = max(
+        (fuzz.token_set_ratio(a or "", t) for a in ai_titles for t in tmdb_titles),
+        default=0,
+    )
     return best / 100.0
 
 
@@ -63,11 +74,24 @@ def _cast_overlap(ai_actors, tmdb_cast) -> float:
 def _prelim_score(cand: dict, hit: dict) -> float:
     """Cheap score without cast (max 0.80); cast adds the remaining 0.20 later."""
     return (
-        0.45 * _title_sim(cand, hit.get("title", ""))
+        0.45 * _title_sim(cand, hit)
         + 0.15 * _year_score(cand.get("year"), hit.get("year"))
         + 0.10 * _media_score(cand.get("media_type"), hit.get("media_type"))
         + 0.10 * min(1.0, (hit.get("popularity") or 0.0) / 50.0)
     )
+
+
+async def _search_candidate(cand: dict, language: str) -> list[dict]:
+    """Search the main title; fall back to alternative titles when it finds nothing."""
+    year, media_type = cand.get("year"), cand.get("media_type")
+    hits = await tmdb_service.search(cand.get("title"), year, media_type, language)
+    if hits:
+        return hits
+    for alt in (cand.get("alternative_titles") or [])[:2]:
+        hits = await tmdb_service.search(alt, year, media_type, language)
+        if hits:
+            return hits
+    return []
 
 
 async def resolve(
@@ -76,9 +100,11 @@ async def resolve(
     region: str = "US",
 ) -> dict | None:
     """Best TMDB entity for the candidate list, enriched with calibrated confidence."""
+    cands = candidates[:4]
+    hit_lists = await asyncio.gather(*(_search_candidate(c, language) for c in cands))
+
     scored: list[tuple[float, dict, dict]] = []
-    for cand in candidates[:4]:
-        hits = await tmdb_service.search_multi(cand.get("title"), cand.get("year"), language)
+    for cand, hits in zip(cands, hit_lists):
         for hit in hits[:5]:
             scored.append((_prelim_score(cand, hit), cand, hit))
 
@@ -86,9 +112,24 @@ async def resolve(
         return None
     scored.sort(key=lambda x: x[0], reverse=True)
 
+    # Distinct entities only -- several candidates often resolve to the same title.
+    seen: set[tuple[int, str]] = set()
+    top: list[tuple[float, dict, dict]] = []
+    for prelim, cand, hit in scored:
+        key = (hit["id"], hit["media_type"])
+        if key in seen:
+            continue
+        seen.add(key)
+        top.append((prelim, cand, hit))
+        if len(top) == _DETAIL_FETCH_LIMIT:
+            break
+
+    detail_list = await asyncio.gather(
+        *(tmdb_service.get_details(hit["id"], hit["media_type"], language, region) for _, _, hit in top)
+    )
+
     best = None
-    for prelim, cand, hit in scored[:_DETAIL_FETCH_LIMIT]:
-        details = await tmdb_service.get_details(hit["id"], hit["media_type"], language, region)
+    for (prelim, cand, _), details in zip(top, detail_list):
         if not details:
             continue
         match = min(1.0, prelim + 0.20 * _cast_overlap(cand.get("actors") or [], details.get("actors") or []))
@@ -101,6 +142,10 @@ async def resolve(
 
     final, details, cand = best
     details["confidence"] = round(final * 100)
-    details["reasoning"] = cand.get("reasoning") or cand.get("scene") or ""
-    details["alternatives"] = [c.get("title") for c in candidates[1:3] if c.get("title")]
+    chosen = {(cand.get("title") or "").lower(), (details.get("title") or "").lower()}
+    details["alternatives"] = [
+        c.get("title")
+        for c in candidates
+        if c.get("title") and c["title"].lower() not in chosen
+    ][:2]
     return details

@@ -6,6 +6,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
