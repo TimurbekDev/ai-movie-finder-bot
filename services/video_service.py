@@ -13,7 +13,7 @@ import ffmpeg
 import requests
 import yt_dlp
 
-from config import INSTAGRAM_COOKIES_FILE, POT_PROVIDER_URL, YOUTUBE_COOKIES_FILE
+from config import INSTAGRAM_COOKIES_FILE, POT_PROVIDER_URL, YOUTUBE_COOKIES_FILE, YTDLP_PROXY
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +43,16 @@ class YouTubeBlockedError(Exception):
     """Raised without hitting the network while the bot-check breaker is open."""
 
 
-# YouTube bot-checks whole server IPs, so once it starts refusing, every further
-# attempt burns ~4s to fail identically. Trip a breaker and go straight to the
-# thumbnail path until the cooldown expires.
-_BOT_BLOCK_RE = re.compile(r"sign in to confirm|confirm you'?re not a bot", re.IGNORECASE)
-_YT_BREAKER_THRESHOLD = 3
-_YT_BREAKER_COOLDOWN_SEC = 30 * 60
+# YouTube bot-checks whole server IPs, not individual videos, so once it refuses
+# every further attempt burns ~4s to fail identically. One request already probes
+# several player clients, so a single all-attempts-blocked request is conclusive:
+# trip immediately and serve from thumbnails instead.
+#
+# Matches ONLY the IP-level bot message -- "Sign in to confirm your age" is a
+# per-video restriction and must not trip the breaker.
+_BOT_BLOCK_RE = re.compile(r"confirm you'?re not a bot", re.IGNORECASE)
+_YT_COOLDOWN_BASE_SEC = 5 * 60
+_YT_COOLDOWN_MAX_SEC = 60 * 60
 _yt_block_streak = 0
 _yt_breaker_until = 0.0
 
@@ -58,20 +62,26 @@ def _yt_breaker_open() -> bool:
 
 
 def _record_yt_outcome(blocked: bool) -> None:
+    """Trip on the first blocked request; back off exponentially while it persists.
+
+    Fast to trip so users never pay for doomed attempts, but short at first so a
+    transient block recovers in minutes rather than staying stuck for an hour.
+    """
     global _yt_block_streak, _yt_breaker_until
     if not blocked:
         if _yt_block_streak or _yt_breaker_until:
             logger.info("YouTube downloads working again; bot-check breaker reset")
         _yt_block_streak, _yt_breaker_until = 0, 0.0
         return
+
     _yt_block_streak += 1
-    if _yt_block_streak >= _YT_BREAKER_THRESHOLD and not _yt_breaker_open():
-        _yt_breaker_until = time.monotonic() + _YT_BREAKER_COOLDOWN_SEC
-        logger.warning(
-            "YouTube bot-check hit %d times; skipping yt-dlp for %d min, using thumbnails",
-            _yt_block_streak,
-            _YT_BREAKER_COOLDOWN_SEC // 60,
-        )
+    cooldown = min(_YT_COOLDOWN_BASE_SEC * 2 ** (_yt_block_streak - 1), _YT_COOLDOWN_MAX_SEC)
+    _yt_breaker_until = time.monotonic() + cooldown
+    logger.warning(
+        "YouTube bot-check (block #%d); skipping yt-dlp for %d min, using thumbnails",
+        _yt_block_streak,
+        cooldown // 60,
+    )
 
 
 def _video_duration(video_path: str) -> float:
@@ -158,6 +168,8 @@ def _base_opts(tmp_dir: str) -> dict:
     if POT_PROVIDER_URL:
         # bgutil sidecar mints PO tokens -> YouTube accepts datacenter IPs without cookies
         opts["extractor_args"]["youtubepot-bgutilhttp"] = {"base_url": [POT_PROVIDER_URL]}
+    if YTDLP_PROXY:
+        opts["proxy"] = YTDLP_PROXY
     return opts
 
 
@@ -179,7 +191,8 @@ def _pot_diagnostics() -> str:
             provider = f"{POT_PROVIDER_URL} ping={r.status_code}"
         except Exception as e:
             provider = f"{POT_PROVIDER_URL} UNREACHABLE ({type(e).__name__})"
-    return f"yt-dlp={yt_dlp.version.__version__} plugin={plugin} provider={provider}"
+    proxy = "on" if YTDLP_PROXY else "off"
+    return f"yt-dlp={yt_dlp.version.__version__} plugin={plugin} provider={provider} proxy={proxy}"
 
 
 def _log_pot_diag_once() -> None:
@@ -245,7 +258,12 @@ def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> tuple
             logger.warning("yt-dlp attempt %d/%d failed for %s: %s", i, len(attempts), url, e)
 
     if is_youtube:
-        _record_yt_outcome(blocked=bool(_BOT_BLOCK_RE.search(str(last_err))))
+        blocked = bool(_BOT_BLOCK_RE.search(str(last_err)))
+        _record_yt_outcome(blocked)
+        if blocked:
+            # Expected on server IPs; the thumbnail path handles it. Raising the raw
+            # DownloadError here would dump a traceback for a condition we recover from.
+            raise YouTubeBlockedError(str(last_err)) from last_err
     logger.error("All yt-dlp attempts failed for %s. PO-token status: %s", url, _pot_diagnostics())
     raise last_err
 

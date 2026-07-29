@@ -14,6 +14,9 @@ YOUTUBE_COOKIES_FILE = os.getenv("YOUTUBE_COOKIES_FILE", "")
 INSTAGRAM_COOKIES_FILE = os.getenv("INSTAGRAM_COOKIES_FILE", "")
 # bgutil-ytdlp-pot-provider sidecar; empty = disabled
 POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "")
+# Residential/mobile proxy for yt-dlp. YouTube bot-checks datacenter IPs regardless
+# of client or PO token, so this is the only way to restore full video download.
+YTDLP_PROXY = os.getenv("YTDLP_PROXY", "")
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set in .env")
