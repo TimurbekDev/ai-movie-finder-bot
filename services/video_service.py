@@ -8,7 +8,7 @@ import ffmpeg
 import requests
 import yt_dlp
 
-from config import INSTAGRAM_COOKIES_FILE, YOUTUBE_COOKIES_FILE
+from config import INSTAGRAM_COOKIES_FILE, POT_PROVIDER_URL, YOUTUBE_COOKIES_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -105,13 +105,18 @@ def _cookiefile_for(url: str) -> str | None:
 
 
 def _base_opts(tmp_dir: str) -> dict:
-    return {
+    opts = {
         "quiet": True,
         "noplaylist": True,
         "format": "mp4[height<=720]/best[height<=720]/best",
         "outtmpl": os.path.join(tmp_dir, "link_video.%(ext)s"),
         "remote_components": ["ejs:github"],
+        "extractor_args": {},
     }
+    if POT_PROVIDER_URL:
+        # bgutil sidecar mints PO tokens -> YouTube accepts datacenter IPs without cookies
+        opts["extractor_args"]["youtubepot-bgutilhttp"] = {"base_url": [POT_PROVIDER_URL]}
+    return opts
 
 
 def _attempt_download(url: str, ydl_opts: dict, tmp_dir: str, max_duration: int) -> tuple[str, str]:
@@ -132,19 +137,22 @@ def _attempt_download(url: str, ydl_opts: dict, tmp_dir: str, max_duration: int)
 def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> tuple[str, str]:
     cookiefile = _cookiefile_for(url)
 
-    attempts = [_base_opts(tmp_dir)]
     if _is_youtube_url(url):
-        # TV/embedded player clients usually skip the "confirm you're not a bot"
-        # sign-in wall that hits datacenter IPs on the default web client.
-        attempts.append(
-            {
-                **_base_opts(tmp_dir),
-                "extractor_args": {"youtube": {"player_client": ["tv", "web_embedded"]}},
-            }
-        )
-    if cookiefile:
-        for opts in attempts:
+        # Cookie-less first: stale cookies poison requests, and alternative player
+        # clients (tv / embedded / android_vr) skip the sign-in bot wall that hits
+        # datacenter IPs on the default web client. Cookies are the last resort.
+        alt = _base_opts(tmp_dir)
+        alt["extractor_args"]["youtube"] = {"player_client": ["tv", "web_embedded", "android_vr"]}
+        attempts = [_base_opts(tmp_dir), alt]
+        if cookiefile:
+            with_cookies = _base_opts(tmp_dir)
+            with_cookies["cookiefile"] = cookiefile
+            attempts.append(with_cookies)
+    else:
+        opts = _base_opts(tmp_dir)
+        if cookiefile:
             opts["cookiefile"] = cookiefile
+        attempts = [opts]
 
     last_err: Exception | None = None
     for i, ydl_opts in enumerate(attempts, start=1):

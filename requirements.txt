@@ -7,4 +7,5 @@ requests>=2.31
 opencv-python>=4.9
 ffmpeg-python>=0.2
 yt-dlp>=2025.6
+bgutil-ytdlp-pot-provider>=1.0
 rapidfuzz>=3.0
