@@ -1,5 +1,6 @@
 import asyncio
 import glob
+import importlib.util
 import logging
 import os
 import shutil
@@ -119,6 +120,34 @@ def _base_opts(tmp_dir: str) -> dict:
     return opts
 
 
+_pot_diag_logged = False
+
+
+def _pot_diagnostics() -> str:
+    """One-line state of the PO-token setup, for log forensics on bot-block."""
+    try:
+        spec = importlib.util.find_spec("yt_dlp_plugins.extractor.getpot_bgutil_http")
+    except Exception:
+        spec = None
+    plugin = "installed" if spec else "MISSING (add bgutil-ytdlp-pot-provider to the image)"
+    if not POT_PROVIDER_URL:
+        provider = "POT_PROVIDER_URL not set"
+    else:
+        try:
+            r = requests.get(f"{POT_PROVIDER_URL.rstrip('/')}/ping", timeout=5)
+            provider = f"{POT_PROVIDER_URL} ping={r.status_code}"
+        except Exception as e:
+            provider = f"{POT_PROVIDER_URL} UNREACHABLE ({type(e).__name__})"
+    return f"yt-dlp={yt_dlp.version.__version__} plugin={plugin} provider={provider}"
+
+
+def _log_pot_diag_once() -> None:
+    global _pot_diag_logged
+    if not _pot_diag_logged:
+        _pot_diag_logged = True
+        logger.info("PO-token status: %s", _pot_diagnostics())
+
+
 def _attempt_download(url: str, ydl_opts: dict, tmp_dir: str, max_duration: int) -> tuple[str, str]:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
@@ -126,7 +155,9 @@ def _attempt_download(url: str, ydl_opts: dict, tmp_dir: str, max_duration: int)
         if duration > max_duration:
             raise VideoTooLongError(duration)
         title = info.get("title") or ""
-        ydl.download([url])
+        # Reuse the already-extracted info: ydl.download() would re-run the whole
+        # (bot-check-prone) extraction against YouTube a second time.
+        ydl.process_ie_result(info, download=True)
 
     for fname in os.listdir(tmp_dir):
         if fname.startswith("link_video.") and not fname.endswith((".part", ".ytdl")):
@@ -135,6 +166,7 @@ def _attempt_download(url: str, ydl_opts: dict, tmp_dir: str, max_duration: int)
 
 
 def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> tuple[str, str]:
+    _log_pot_diag_once()
     cookiefile = _cookiefile_for(url)
 
     if _is_youtube_url(url):
@@ -163,6 +195,7 @@ def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> tuple
         except Exception as e:
             last_err = e
             logger.warning("yt-dlp attempt %d/%d failed for %s: %s", i, len(attempts), url, e)
+    logger.error("All yt-dlp attempts failed for %s. PO-token status: %s", url, _pot_diagnostics())
     raise last_err
 
 
