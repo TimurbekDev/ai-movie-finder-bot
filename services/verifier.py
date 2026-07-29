@@ -71,8 +71,11 @@ def _cast_overlap(ai_actors, tmdb_cast) -> float:
     return min(1.0, hits / len(ai_actors))
 
 
+_PRELIM_MAX = 0.80  # weights below sum to this; cast supplies the remaining 0.20
+
+
 def _prelim_score(cand: dict, hit: dict) -> float:
-    """Cheap score without cast (max 0.80); cast adds the remaining 0.20 later."""
+    """Cheap score without cast (max _PRELIM_MAX); cast adds the rest later."""
     return (
         0.45 * _title_sim(cand, hit)
         + 0.15 * _year_score(cand.get("year"), hit.get("year"))
@@ -132,16 +135,36 @@ async def resolve(
     for (prelim, cand, _), details in zip(top, detail_list):
         if not details:
             continue
-        match = min(1.0, prelim + 0.20 * _cast_overlap(cand.get("actors") or [], details.get("actors") or []))
-        final = 0.65 * match + 0.35 * _norm_conf(cand.get("confidence"))
-        if best is None or final > best[0]:
-            best = (final, details, cand)
+        ai_actors = cand.get("actors") or []
+        cast = _cast_overlap(ai_actors, details.get("actors") or [])
+        ai_conf = _norm_conf(cand.get("confidence"))
+
+        # How well the candidate resolved to THIS entity, normalized to 0..1. When
+        # the AI named no actors, cast overlap is unmeasurable rather than zero, so
+        # it must not drag the score down -- otherwise animation and unknown-cast
+        # titles get a permanent 20% penalty.
+        match = prelim / _PRELIM_MAX
+        if ai_actors:
+            match = 0.8 * match + 0.2 * cast
+
+        # Ranking and reported confidence answer different questions. `match` only
+        # says we resolved the candidate NAME to the right TMDB entity -- it cannot
+        # make a shaky guess more likely, since the AI supplied the title and year
+        # being matched. So the AI's own probability sets the base rate. Cast overlap
+        # lifts it only modestly: a prolific actor confirms the face was read right,
+        # not which of that actor's films this is.
+        rank = match * (0.5 + 0.5 * ai_conf)
+        confidence = ai_conf * match
+        confidence += (1.0 - confidence) * 0.3 * cast
+
+        if best is None or rank > best[0]:
+            best = (rank, details, cand, confidence)
 
     if not best:
         return None
 
-    final, details, cand = best
-    details["confidence"] = round(final * 100)
+    _, details, cand, confidence = best
+    details["confidence"] = round(confidence * 100)
     chosen = {(cand.get("title") or "").lower(), (details.get("title") or "").lower()}
     details["alternatives"] = [
         c.get("title")

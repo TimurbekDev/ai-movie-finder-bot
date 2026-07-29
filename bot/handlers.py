@@ -376,6 +376,36 @@ async def handle_video(message: Message) -> None:
     await _deliver_result(message, analysis, lang, "video")
 
 
+async def _identify_from_youtube_thumbnails(url: str) -> dict | None:
+    """Identify from the thumbnail CDN when the player API bot-blocks the download.
+
+    i.ytimg.com needs no auth and stays reachable from server IPs, and it exposes
+    several distinct moments of the clip -- so this is a real multi-frame analysis,
+    not a degraded single-image guess.
+    """
+    try:
+        title, raw_frames = await video_service.fetch_youtube_frames(url)
+        if not raw_frames:
+            logger.warning("No YouTube thumbnails available for %s", url)
+            return None
+
+        def _prepare() -> tuple[list[bytes], int | None]:
+            best = image_service.select_best_frames(raw_frames, k=4)
+            frames = [image_service.safe_preprocess(f) for f in best]
+            try:
+                return frames, image_service.phash(frames[0])
+            except Exception:
+                return frames, None
+
+        frames, ph = await asyncio.to_thread(_prepare)
+        hint = f"Video title: {title}" if title else ""
+        logger.info("YouTube thumbnail fallback: %d frame(s), title=%r", len(frames), title)
+        return await _analyze_with_cache(frames, ph, hint=hint)
+    except Exception:
+        logger.exception("YouTube thumbnail fallback failed")
+        return None
+
+
 @router.message(F.text.regexp(VIDEO_LINK_PATTERN))
 async def handle_video_link(message: Message) -> None:
     match = VIDEO_LINK_PATTERN.search(message.text)
@@ -417,15 +447,7 @@ async def handle_video_link(message: Message) -> None:
         logger.exception("Failed to fetch/analyze %s video", source)
         analysis = None
         if source == "youtube":
-            try:
-                title, thumbnail = await video_service.fetch_youtube_oembed(url)
-                if thumbnail:
-                    processed = await asyncio.to_thread(image_service.safe_preprocess, thumbnail)
-                    analysis = await openai_service.analyze(
-                        [processed], ocr_text=f"Video title: {title}" if title else ""
-                    )
-            except Exception:
-                logger.exception("YouTube oEmbed fallback failed")
+            analysis = await _identify_from_youtube_thumbnails(url)
         if not analysis or not analysis.get("candidates"):
             await status_msg.edit_text(t("link_fetch_error", lang))
             return

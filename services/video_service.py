@@ -1,9 +1,12 @@
 import asyncio
 import glob
+import hashlib
 import importlib.util
 import logging
 import os
+import re
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 
 import ffmpeg
 import requests
@@ -14,6 +17,8 @@ from config import INSTAGRAM_COOKIES_FILE, POT_PROVIDER_URL, YOUTUBE_COOKIES_FIL
 logger = logging.getLogger(__name__)
 
 MAX_LINK_VIDEO_DURATION_SEC = 180
+
+_session = requests.Session()  # keep-alive for thumbnail/oEmbed fetches
 
 
 def _ensure_ffmpeg_on_path() -> None:
@@ -206,28 +211,71 @@ async def fetch_remote_video(
     return await asyncio.to_thread(_fetch_remote_video_sync, url, tmp_dir, max_duration)
 
 
-def _fetch_youtube_oembed_sync(url: str) -> tuple[str, bytes | None]:
-    """Falls back to YouTube's public oEmbed data when yt-dlp gets bot-blocked.
+_YOUTUBE_ID_RE = re.compile(
+    r"(?:youtube\.com/(?:shorts/|embed/|live/|watch\?(?:.*&)?v=)|youtu\.be/)([\w-]{11})"
+)
 
-    Thumbnails are served from plain image CDN URLs with no bot/cookie checks, and
-    the video title often names the movie outright -- both feed the identifier
-    even when full video download is blocked.
+# i.ytimg.com serves these off a plain image CDN with no bot check, so they stay
+# reachable from datacenter IPs that the player API rejects. Several are genuinely
+# different moments of the clip, not just crops of one thumbnail.
+_THUMB_NAMES = ("oar2", "maxresdefault", "frame0", "hq1", "hq2", "hq3", "hqdefault")
+
+
+def youtube_video_id(url: str) -> str | None:
+    match = _YOUTUBE_ID_RE.search(url)
+    return match.group(1) if match else None
+
+
+def _fetch_youtube_title_sync(url: str) -> str:
+    """oEmbed title -- often names the movie outright, and needs no auth."""
+    try:
+        resp = _session.get(
+            "https://www.youtube.com/oembed", params={"url": url, "format": "json"}, timeout=10
+        )
+        resp.raise_for_status()
+        return resp.json().get("title") or ""
+    except Exception:
+        logger.warning("YouTube oEmbed title fetch failed for %s", url, exc_info=True)
+        return ""
+
+
+def _fetch_thumb(video_id: str, name: str) -> bytes | None:
+    try:
+        resp = _session.get(f"https://i.ytimg.com/vi/{video_id}/{name}.jpg", timeout=10)
+        if resp.status_code != 200 or not resp.content:
+            return None
+        return resp.content
+    except Exception:
+        return None
+
+
+def _fetch_youtube_frames_sync(url: str) -> tuple[str, list[bytes]]:
+    """Title + distinct still frames pulled straight from the thumbnail CDN.
+
+    This is the path that keeps identification working when the player API answers
+    "Sign in to confirm you're not a bot" -- as of 2026 PO tokens no longer clear
+    that check from server IPs, but the image CDN never enforced it.
     """
-    oembed = requests.get(
-        "https://www.youtube.com/oembed", params={"url": url, "format": "json"}, timeout=10
-    )
-    oembed.raise_for_status()
-    data = oembed.json()
-    title = data.get("title") or ""
+    video_id = youtube_video_id(url)
+    if not video_id:
+        return _fetch_youtube_title_sync(url), []
 
-    thumbnail = None
-    thumbnail_url = data.get("thumbnail_url")
-    if thumbnail_url:
-        image = requests.get(thumbnail_url, timeout=10)
-        image.raise_for_status()
-        thumbnail = image.content
-    return title, thumbnail
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        title_future = pool.submit(_fetch_youtube_title_sync, url)
+        images = list(pool.map(lambda n: _fetch_thumb(video_id, n), _THUMB_NAMES))
+        title = title_future.result()
+
+    frames, seen = [], set()
+    for img in images:
+        if not img:
+            continue
+        digest = hashlib.md5(img).digest()  # several names alias the same picture
+        if digest in seen:
+            continue
+        seen.add(digest)
+        frames.append(img)
+    return title, frames
 
 
-async def fetch_youtube_oembed(url: str) -> tuple[str, bytes | None]:
-    return await asyncio.to_thread(_fetch_youtube_oembed_sync, url)
+async def fetch_youtube_frames(url: str) -> tuple[str, list[bytes]]:
+    return await asyncio.to_thread(_fetch_youtube_frames_sync, url)
