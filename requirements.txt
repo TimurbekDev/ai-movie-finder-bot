@@ -6,6 +6,6 @@ python-dotenv>=1.0
 requests>=2.31
 opencv-python>=4.9
 ffmpeg-python>=0.2
-yt-dlp[default] @ git+https://github.com/yt-dlp/yt-dlp.git@nightly
+yt-dlp[default]>=2025.6; python_version >= '3.8'
 bgutil-ytdlp-pot-provider>=1.0
 rapidfuzz>=3.0
