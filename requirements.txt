@@ -1,6 +1,6 @@
 aiogram>=3.4,<4
 openai>=1.99
-sqlalchemy>=2.0
+sqlalchemy[asyncio]>=2.0
 asyncpg>=0.29
 python-dotenv>=1.0
 requests>=2.31
