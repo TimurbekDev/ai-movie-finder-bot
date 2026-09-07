@@ -7,10 +7,17 @@ import tempfile
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.types import CallbackQuery, FSInputFile, Message, User as TgUser
 from sqlalchemy import select
 
-from bot.keyboards import admin_panel_keyboard, language_keyboard, main_menu_keyboard, movie_result_keyboard
+from bot import link_store
+from bot.keyboards import (
+    admin_panel_keyboard,
+    language_keyboard,
+    link_action_keyboard,
+    main_menu_keyboard,
+    movie_result_keyboard,
+)
 from config import ADMIN_IDS
 from database.database import get_session
 from database.models import SearchHistory
@@ -51,6 +58,9 @@ VIDEO_LINK_PATTERN = re.compile(
 
 ADMIN_MAX_LINK_DURATION_SEC = 24 * 3600
 TG_CAPTION_LIMIT = 1024
+# Bot API refuses uploads above this, and it rejects them only after the whole
+# file has been pushed -- so check the size locally before sending.
+TG_UPLOAD_LIMIT_BYTES = 50 * 1024 * 1024
 
 
 def _is_admin(user_id: int) -> bool:
@@ -262,7 +272,14 @@ async def _analyze_with_cache(frames: list[bytes], ph: int | None, hint: str = "
     return analysis
 
 
-async def _deliver_result(message: Message, analysis: dict, lang: str, file_type: str) -> None:
+async def _deliver_result(
+    message: Message, from_user: TgUser, analysis: dict, lang: str, file_type: str
+) -> None:
+    """Resolve, persist and render the analysis.
+
+    `message` is only a send target -- on the link flow it belongs to the bot, so
+    the acting user is always passed explicitly.
+    """
     candidates = analysis.get("candidates") or []
     tmdb_result = None
     if candidates:
@@ -272,7 +289,7 @@ async def _deliver_result(message: Message, analysis: dict, lang: str, file_type
 
     async with get_session() as session:
         user = await get_or_create_user(
-            session, message.from_user.id, message.from_user.username, message.from_user.language_code
+            session, from_user.id, from_user.username, from_user.language_code
         )
         await _save_history(session, user.id, file_type, analysis, tmdb_result)
 
@@ -336,7 +353,7 @@ async def handle_photo(message: Message) -> None:
         return
 
     await status_msg.delete()
-    await _deliver_result(message, analysis, lang, "image")
+    await _deliver_result(message, message.from_user, analysis, lang, "image")
 
 
 @router.message(F.video)
@@ -373,7 +390,7 @@ async def handle_video(message: Message) -> None:
         return
 
     await status_msg.delete()
-    await _deliver_result(message, analysis, lang, "video")
+    await _deliver_result(message, message.from_user, analysis, lang, "video")
 
 
 async def _identify_from_youtube_thumbnails(url: str) -> dict | None:
@@ -406,36 +423,149 @@ async def _identify_from_youtube_thumbnails(url: str) -> dict | None:
         return None
 
 
+def _extract_link(text: str) -> str | None:
+    match = VIDEO_LINK_PATTERN.search(text or "")
+    if not match:
+        return None
+    url = match.group(0)
+    return url if url.startswith("http") else f"https://{url}"
+
+
+def _link_source(url: str) -> str:
+    return "instagram" if INSTAGRAM_URL_PATTERN.search(url) else "youtube"
+
+
 @router.message(F.text.regexp(VIDEO_LINK_PATTERN))
 async def handle_video_link(message: Message) -> None:
-    match = VIDEO_LINK_PATTERN.search(message.text)
-    url = match.group(0)
-    if not url.startswith("http"):
-        url = f"https://{url}"
-    source = "instagram" if INSTAGRAM_URL_PATTERN.search(url) else "youtube"
+    """A link alone is ambiguous, so ask what to do with it instead of guessing."""
+    url = _extract_link(message.text)
+    if not url:
+        return
 
     async with get_session() as session:
         user = await get_or_create_user(
             session, message.from_user.id, message.from_user.username, message.from_user.language_code
         )
         lang = user.language
-        is_admin = _is_admin(message.from_user.id)
 
-        if not is_admin and not await can_search(session, user):
-            await message.answer(t("limit_reached", lang, limit=FREE_DAILY_LIMIT))
-            return
+    token = link_store.put(url)
+    await message.answer(t("link_action_prompt", lang), reply_markup=link_action_keyboard(token, lang))
 
-    status_msg = await message.answer(t("analyzing_video", lang))
+
+@router.callback_query(F.data.startswith("link:"))
+async def cb_link_action(callback: CallbackQuery) -> None:
+    _, action, token = callback.data.split(":", 2)
+
+    async with get_session() as session:
+        user = await get_or_create_user(
+            session, callback.from_user.id, callback.from_user.username, callback.from_user.language_code
+        )
+        lang = user.language
+    is_admin = _is_admin(callback.from_user.id)
+
+    url = link_store.get(token)
+    if not url:
+        await callback.message.edit_text(t("link_expired", lang))
+        await callback.answer()
+        return
+
+    await callback.answer()
+    if action == "video":
+        await _download_link_video(callback, url, lang, is_admin)
+    elif action == "audio":
+        await _extract_link_audio(callback, url, lang, is_admin)
+    else:
+        await _identify_link_movie(callback, url, lang, is_admin)
+
+
+async def _download_link_video(callback: CallbackQuery, url: str, lang: str, is_admin: bool) -> None:
+    status_msg = await callback.message.edit_text(t("downloading_video", lang))
+    max_duration = ADMIN_MAX_LINK_DURATION_SEC if is_admin else video_service.MAX_DOWNLOAD_DURATION_SEC
+    try:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            video_path, title = await video_service.fetch_remote_video(url, tmp_dir, max_duration)
+            if os.path.getsize(video_path) > TG_UPLOAD_LIMIT_BYTES:
+                await status_msg.edit_text(t("file_too_large_to_send", lang))
+                return
+            await callback.message.answer_video(
+                FSInputFile(video_path), caption=title[:TG_CAPTION_LIMIT] or None
+            )
+    except VideoTooLongError:
+        await status_msg.edit_text(t("media_too_long", lang))
+        return
+    except YouTubeBlockedError:
+        # No thumbnail fallback here -- the user asked for the file itself.
+        logger.info("Download refused for %s: YouTube bot-check breaker open", url)
+        await status_msg.edit_text(t("link_fetch_error", lang))
+        return
+    except Exception:
+        logger.exception("Failed to download %s", url)
+        await status_msg.edit_text(t("link_fetch_error", lang))
+        return
+
+    await status_msg.delete()
+
+
+def _safe_filename(name: str) -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|]+', " ", name).strip()
+    return cleaned[:64] or "audio"
+
+
+def _audio_performer(info: dict) -> str | None:
+    for key in ("artist", "creator", "uploader", "channel"):
+        value = info.get(key)
+        if value:
+            return str(value)[:64]
+    return None
+
+
+async def _extract_link_audio(callback: CallbackQuery, url: str, lang: str, is_admin: bool) -> None:
+    status_msg = await callback.message.edit_text(t("extracting_audio", lang))
+    max_duration = ADMIN_MAX_LINK_DURATION_SEC if is_admin else video_service.MAX_AUDIO_DURATION_SEC
+    try:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            audio_path, info = await video_service.fetch_remote_audio(url, tmp_dir, max_duration)
+            if os.path.getsize(audio_path) > TG_UPLOAD_LIMIT_BYTES:
+                await status_msg.edit_text(t("file_too_large_to_send", lang))
+                return
+            title = (info.get("track") or info.get("title") or "audio")[:64]
+            await callback.message.answer_audio(
+                FSInputFile(
+                    audio_path, filename=f"{_safe_filename(title)}.{video_service.AUDIO_EXT}"
+                ),
+                title=title,
+                performer=_audio_performer(info),
+                duration=int(info.get("duration") or 0) or None,
+            )
+    except VideoTooLongError:
+        await status_msg.edit_text(t("media_too_long", lang))
+        return
+    except Exception:
+        # Includes YouTubeBlockedError: thumbnails carry no audio, so there is no fallback.
+        logger.exception("Failed to extract audio from %s", url)
+        await status_msg.edit_text(t("audio_error", lang))
+        return
+
+    await status_msg.delete()
+
+
+async def _identify_link_movie(callback: CallbackQuery, url: str, lang: str, is_admin: bool) -> None:
+    source = _link_source(url)
+
+    if not is_admin:
+        async with get_session() as session:
+            user = await get_or_create_user(
+                session, callback.from_user.id, callback.from_user.username, callback.from_user.language_code
+            )
+            if not await can_search(session, user):
+                await callback.message.edit_text(t("limit_reached", lang, limit=FREE_DAILY_LIMIT))
+                return
+
+    status_msg = await callback.message.edit_text(t("analyzing_video", lang))
     try:
         with tempfile.TemporaryDirectory() as tmp_dir:
             max_duration = ADMIN_MAX_LINK_DURATION_SEC if is_admin else video_service.MAX_LINK_VIDEO_DURATION_SEC
             video_path, video_title = await video_service.fetch_remote_video(url, tmp_dir, max_duration)
-
-            try:
-                await message.answer_video(FSInputFile(video_path))
-            except Exception:
-                # Echoing the clip back is a nicety; never let it kill identification.
-                logger.warning("Could not send fetched video back to user", exc_info=True)
 
             frames, ph = await asyncio.to_thread(_prepare_video_frames, video_path, tmp_dir)
             hint = f"Video title: {video_title}" if video_title else ""
@@ -459,4 +589,4 @@ async def handle_video_link(message: Message) -> None:
             return
 
     await status_msg.delete()
-    await _deliver_result(message, analysis, lang, source)
+    await _deliver_result(callback.message, callback.from_user, analysis, lang, source)

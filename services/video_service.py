@@ -18,6 +18,11 @@ from config import INSTAGRAM_COOKIES_FILE, POT_PROVIDER_URL, YOUTUBE_COOKIES_FIL
 logger = logging.getLogger(__name__)
 
 MAX_LINK_VIDEO_DURATION_SEC = 180
+# A plain download or audio rip needs no AI pass, so it can afford a longer clip;
+# Telegram's 50 MB bot upload cap is the real ceiling and is checked on the file.
+MAX_DOWNLOAD_DURATION_SEC = 20 * 60
+MAX_AUDIO_DURATION_SEC = 30 * 60
+AUDIO_EXT = "mp3"
 
 _session = requests.Session()  # keep-alive for thumbnail/oEmbed fetches
 
@@ -156,15 +161,19 @@ def _cookiefile_for(url: str) -> str | None:
     return None
 
 
-def _base_opts(tmp_dir: str) -> dict:
+def _base_opts(tmp_dir: str, audio: bool = False) -> dict:
     opts = {
         "quiet": True,
         "noplaylist": True,
-        "format": "mp4[height<=720]/best[height<=720]/best",
+        "format": "bestaudio/best" if audio else "mp4[height<=720]/best[height<=720]/best",
         "outtmpl": os.path.join(tmp_dir, "link_video.%(ext)s"),
         "remote_components": ["ejs:github"],
         "extractor_args": {},
     }
+    if audio:
+        opts["postprocessors"] = [
+            {"key": "FFmpegExtractAudio", "preferredcodec": AUDIO_EXT, "preferredquality": "192"}
+        ]
     if POT_PROVIDER_URL:
         # bgutil sidecar mints PO tokens -> YouTube accepts datacenter IPs without cookies
         opts["extractor_args"]["youtubepot-bgutilhttp"] = {"base_url": [POT_PROVIDER_URL]}
@@ -202,24 +211,45 @@ def _log_pot_diag_once() -> None:
         logger.info("PO-token status: %s", _pot_diagnostics())
 
 
-def _attempt_download(url: str, ydl_opts: dict, tmp_dir: str, max_duration: int) -> tuple[str, str]:
+def _downloaded_file(tmp_dir: str, audio: bool) -> str | None:
+    """The finished artifact in tmp_dir -- the converted track when ripping audio.
+
+    FFmpegExtractAudio usually removes the source container, but not on every
+    extractor path, so prefer the .mp3 explicitly instead of taking whatever
+    os.listdir happens to yield first.
+    """
+    candidates = [
+        f
+        for f in os.listdir(tmp_dir)
+        if f.startswith("link_video.") and not f.endswith((".part", ".ytdl"))
+    ]
+    if audio:
+        converted = [f for f in candidates if f.endswith(f".{AUDIO_EXT}")]
+        candidates = converted or candidates
+    return os.path.join(tmp_dir, candidates[0]) if candidates else None
+
+
+def _attempt_download(
+    url: str, ydl_opts: dict, tmp_dir: str, max_duration: int, audio: bool = False
+) -> tuple[str, dict]:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
         duration = info.get("duration") or 0
         if duration > max_duration:
             raise VideoTooLongError(duration)
-        title = info.get("title") or ""
         # Reuse the already-extracted info: ydl.download() would re-run the whole
         # (bot-check-prone) extraction against YouTube a second time.
         ydl.process_ie_result(info, download=True)
 
-    for fname in os.listdir(tmp_dir):
-        if fname.startswith("link_video.") and not fname.endswith((".part", ".ytdl")):
-            return os.path.join(tmp_dir, fname), title
-    raise RuntimeError("Video download produced no file")
+    path = _downloaded_file(tmp_dir, audio)
+    if path is None:
+        raise RuntimeError("Video download produced no file")
+    return path, info
 
 
-def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> tuple[str, str]:
+def _fetch_remote_video_sync(
+    url: str, tmp_dir: str, max_duration: int, audio: bool = False
+) -> tuple[str, dict]:
     _log_pot_diag_once()
     is_youtube = _is_youtube_url(url)
     if is_youtube and _yt_breaker_open():
@@ -231,15 +261,15 @@ def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> tuple
         # Cookie-less first: stale cookies poison requests, and alternative player
         # clients (tv / embedded / android_vr) skip the sign-in bot wall that hits
         # datacenter IPs on the default web client. Cookies are the last resort.
-        alt = _base_opts(tmp_dir)
+        alt = _base_opts(tmp_dir, audio)
         alt["extractor_args"]["youtube"] = {"player_client": ["tv", "web_embedded", "android_vr"]}
-        attempts = [_base_opts(tmp_dir), alt]
+        attempts = [_base_opts(tmp_dir, audio), alt]
         if cookiefile:
-            with_cookies = _base_opts(tmp_dir)
+            with_cookies = _base_opts(tmp_dir, audio)
             with_cookies["cookiefile"] = cookiefile
             attempts.append(with_cookies)
     else:
-        opts = _base_opts(tmp_dir)
+        opts = _base_opts(tmp_dir, audio)
         if cookiefile:
             opts["cookiefile"] = cookiefile
         attempts = [opts]
@@ -247,7 +277,7 @@ def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> tuple
     last_err: Exception | None = None
     for i, ydl_opts in enumerate(attempts, start=1):
         try:
-            result = _attempt_download(url, ydl_opts, tmp_dir, max_duration)
+            result = _attempt_download(url, ydl_opts, tmp_dir, max_duration, audio)
             if is_youtube:
                 _record_yt_outcome(blocked=False)
             return result
@@ -268,11 +298,26 @@ def _fetch_remote_video_sync(url: str, tmp_dir: str, max_duration: int) -> tuple
     raise last_err
 
 
+async def fetch_remote_media(
+    url: str, tmp_dir: str, max_duration: int = MAX_LINK_VIDEO_DURATION_SEC, audio: bool = False
+) -> tuple[str, dict]:
+    """Download from YouTube/Instagram/any yt-dlp source -> (file path, yt-dlp info)."""
+    return await asyncio.to_thread(_fetch_remote_video_sync, url, tmp_dir, max_duration, audio)
+
+
 async def fetch_remote_video(
     url: str, tmp_dir: str, max_duration: int = MAX_LINK_VIDEO_DURATION_SEC
 ) -> tuple[str, str]:
-    """Download from YouTube/Instagram/any yt-dlp source -> (file path, video title)."""
-    return await asyncio.to_thread(_fetch_remote_video_sync, url, tmp_dir, max_duration)
+    """Download the video file -> (file path, video title)."""
+    path, info = await fetch_remote_media(url, tmp_dir, max_duration)
+    return path, info.get("title") or ""
+
+
+async def fetch_remote_audio(
+    url: str, tmp_dir: str, max_duration: int = MAX_AUDIO_DURATION_SEC
+) -> tuple[str, dict]:
+    """Download and transcode to mp3 -> (file path, yt-dlp info)."""
+    return await fetch_remote_media(url, tmp_dir, max_duration, audio=True)
 
 
 _YOUTUBE_ID_RE = re.compile(

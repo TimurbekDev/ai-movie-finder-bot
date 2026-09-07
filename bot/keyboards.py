@@ -16,6 +16,17 @@ def movie_result_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def link_action_keyboard(token: str, lang: str) -> InlineKeyboardMarkup:
+    """Ask what to do with a pasted video link: download, identify, or rip the audio."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=t("action_download_video", lang), callback_data=f"link:video:{token}")],
+            [InlineKeyboardButton(text=t("action_find_movie", lang), callback_data=f"link:movie:{token}")],
+            [InlineKeyboardButton(text=t("action_extract_audio", lang), callback_data=f"link:audio:{token}")],
+        ]
+    )
+
+
 def main_menu_keyboard(lang: str) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[

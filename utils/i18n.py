@@ -9,7 +9,9 @@ TEXTS: dict[str, dict[str, str]] = {
             "and I will find the movie or show name.\n\n"
             "📸 Screenshot\n"
             "🎥 Video file\n"
-            "🔗 YouTube / Instagram Reels link"
+            "🔗 YouTube / Instagram Reels link\n\n"
+            "Send a link and I'll ask whether to download it, identify the movie, "
+            "or turn it into music."
         ),
         "ru": (
             "🎬 AI Movie Finder\n\n"
@@ -17,7 +19,9 @@ TEXTS: dict[str, dict[str, str]] = {
             "и я найду название фильма или сериала.\n\n"
             "📸 Скриншот\n"
             "🎥 Видеофайл\n"
-            "🔗 Ссылка YouTube / Instagram Reels"
+            "🔗 Ссылка YouTube / Instagram Reels\n\n"
+            "Пришли ссылку — и я спрошу: скачать видео, найти фильм "
+            "или сделать из него музыку."
         ),
         "uz": (
             "🎬 AI Movie Finder\n\n"
@@ -25,7 +29,9 @@ TEXTS: dict[str, dict[str, str]] = {
             "men film yoki serial nomini topib beraman.\n\n"
             "📸 Skrinshot\n"
             "🎥 Video fayl\n"
-            "🔗 YouTube / Instagram Reels havolasi"
+            "🔗 YouTube / Instagram Reels havolasi\n\n"
+            "Havola yuborsangiz, so'rayman: videoni yuklab beraymi, kinoni topaymi "
+            "yoki musiqaga o'giraymi."
         ),
     },
     "choose_language": {
@@ -92,6 +98,56 @@ TEXTS: dict[str, dict[str, str]] = {
         "en": "Couldn't fetch that video. Make sure it's a public YouTube or Instagram Reels link and try again.",
         "ru": "Не удалось загрузить это видео. Убедитесь, что это публичная ссылка YouTube или Instagram Reels, и попробуйте снова.",
         "uz": "Bu videoni yuklab bo'lmadi. Havola ochiq (public) YouTube yoki Instagram Reels havolasi ekanini tekshirib, qaytadan urinib ko'ring.",
+    },
+    "link_action_prompt": {
+        "en": "🔗 Link received. What should I do with it?",
+        "ru": "🔗 Ссылка получена. Что с ней сделать?",
+        "uz": "🔗 Havola qabul qilindi. Buning bilan nima qilay?",
+    },
+    "action_download_video": {
+        "en": "📥 Download video",
+        "ru": "📥 Скачать видео",
+        "uz": "📥 Videoni yuklab olish",
+    },
+    "action_find_movie": {
+        "en": "🎬 Find the movie",
+        "ru": "🎬 Найти фильм",
+        "uz": "🎬 Kino sifatida qidirish",
+    },
+    "action_extract_audio": {
+        "en": "🎵 Convert to music",
+        "ru": "🎵 Сделать музыкой",
+        "uz": "🎵 Musiqaga o'girish",
+    },
+    "downloading_video": {
+        "en": "📥 Downloading video...",
+        "ru": "📥 Скачиваю видео...",
+        "uz": "📥 Video yuklanmoqda...",
+    },
+    "extracting_audio": {
+        "en": "🎵 Converting to music...",
+        "ru": "🎵 Конвертирую в музыку...",
+        "uz": "🎵 Musiqaga o'girilmoqda...",
+    },
+    "link_expired": {
+        "en": "This link has expired. Please send it again.",
+        "ru": "Срок действия этой ссылки истёк. Отправьте её снова.",
+        "uz": "Bu havolaning muddati tugadi. Qaytadan yuboring.",
+    },
+    "file_too_large_to_send": {
+        "en": "The file is over 50 MB, so Telegram won't let me send it. Try a shorter clip.",
+        "ru": "Файл больше 50 МБ, Telegram не позволяет его отправить. Попробуйте более короткий ролик.",
+        "uz": "Fayl 50 MB dan katta, Telegram uni yubora olmaydi. Qisqaroq video sinab ko'ring.",
+    },
+    "audio_error": {
+        "en": "Couldn't convert that link to music. Make sure it's a public link and try again.",
+        "ru": "Не удалось преобразовать ссылку в музыку. Убедитесь, что ссылка публичная, и попробуйте снова.",
+        "uz": "Havolani musiqaga o'girib bo'lmadi. Havola ochiq (public) ekanini tekshirib, qaytadan urinib ko'ring.",
+    },
+    "media_too_long": {
+        "en": "This video is too long for that. Please send a shorter one.",
+        "ru": "Это видео слишком длинное для такой операции. Отправьте покороче.",
+        "uz": "Bu video buning uchun juda uzun. Qisqaroq video yuboring.",
     },
     "not_identified": {
         "en": "Sorry, I couldn't identify the movie from this. Try a clearer screenshot or video.",
