@@ -27,6 +27,22 @@ def link_action_keyboard(token: str, lang: str) -> InlineKeyboardMarkup:
     )
 
 
+def instagram_profile_keyboard(token: str, lang: str, is_private: bool) -> InlineKeyboardMarkup:
+    """Actions on a looked-up profile. A private account exposes nothing but the
+    avatar, so the post/story buttons are left off rather than offered and refused."""
+    rows = [[InlineKeyboardButton(text=t("action_profile_pic", lang), callback_data=f"ig:pic:{token}")]]
+    if not is_private:
+        rows.insert(
+            0,
+            [InlineKeyboardButton(text=t("action_ig_posts", lang), callback_data=f"ig:posts:{token}")],
+        )
+        rows.insert(
+            1,
+            [InlineKeyboardButton(text=t("action_ig_stories", lang), callback_data=f"ig:stories:{token}")],
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def main_menu_keyboard(lang: str) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[

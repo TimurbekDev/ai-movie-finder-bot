@@ -5,7 +5,7 @@ from typing import Any, Awaitable, Callable
 from aiogram import BaseMiddleware
 from aiogram.types import Message
 
-from bot.handlers import VIDEO_LINK_PATTERN
+from bot.handlers import INSTAGRAM_PROFILE_TRIGGER, VIDEO_LINK_PATTERN
 
 
 class ThrottlingMiddleware(BaseMiddleware):
@@ -21,7 +21,13 @@ class ThrottlingMiddleware(BaseMiddleware):
         event: Message,
         data: dict[str, Any],
     ) -> Any:
-        is_heavy = event.photo or event.video or (event.text and VIDEO_LINK_PATTERN.search(event.text))
+        text = event.text or ""
+        is_heavy = bool(
+            event.photo
+            or event.video
+            or VIDEO_LINK_PATTERN.search(text)
+            or INSTAGRAM_PROFILE_TRIGGER.search(text)
+        )
         if not is_heavy:
             return await handler(event, data)
 

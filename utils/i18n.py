@@ -9,9 +9,11 @@ TEXTS: dict[str, dict[str, str]] = {
             "and I will find the movie or show name.\n\n"
             "📸 Screenshot\n"
             "🎥 Video file\n"
-            "🔗 YouTube / Instagram Reels link\n\n"
+            "🔗 YouTube / Instagram Reels link\n"
+            "👤 Instagram profile link or @username\n\n"
             "Send a link and I'll ask whether to download it, identify the movie, "
-            "or turn it into music."
+            "or turn it into music.\n"
+            "Send a profile and I'll show its info, posts and stories."
         ),
         "ru": (
             "🎬 AI Movie Finder\n\n"
@@ -19,9 +21,11 @@ TEXTS: dict[str, dict[str, str]] = {
             "и я найду название фильма или сериала.\n\n"
             "📸 Скриншот\n"
             "🎥 Видеофайл\n"
-            "🔗 Ссылка YouTube / Instagram Reels\n\n"
+            "🔗 Ссылка YouTube / Instagram Reels\n"
+            "👤 Ссылка на профиль Instagram или @username\n\n"
             "Пришли ссылку — и я спрошу: скачать видео, найти фильм "
-            "или сделать из него музыку."
+            "или сделать из него музыку.\n"
+            "Пришли профиль — покажу информацию, публикации и истории."
         ),
         "uz": (
             "🎬 AI Movie Finder\n\n"
@@ -29,9 +33,11 @@ TEXTS: dict[str, dict[str, str]] = {
             "men film yoki serial nomini topib beraman.\n\n"
             "📸 Skrinshot\n"
             "🎥 Video fayl\n"
-            "🔗 YouTube / Instagram Reels havolasi\n\n"
+            "🔗 YouTube / Instagram Reels havolasi\n"
+            "👤 Instagram profil havolasi yoki @username\n\n"
             "Havola yuborsangiz, so'rayman: videoni yuklab beraymi, kinoni topaymi "
-            "yoki musiqaga o'giraymi."
+            "yoki musiqaga o'giraymi.\n"
+            "Profil yuborsangiz, ma'lumotlari, postlari va story'larini ko'rsataman."
         ),
     },
     "choose_language": {
@@ -149,6 +155,84 @@ TEXTS: dict[str, dict[str, str]] = {
         "ru": "Это видео слишком длинное для такой операции. Отправьте покороче.",
         "uz": "Bu video buning uchun juda uzun. Qisqaroq video yuboring.",
     },
+    "ig_looking_up": {
+        "en": "🔎 Looking up @{username}...",
+        "ru": "🔎 Ищу профиль @{username}...",
+        "uz": "🔎 @{username} profili qidirilmoqda...",
+    },
+    "ig_profile_not_found": {
+        "en": "No Instagram account found with that username.",
+        "ru": "Аккаунт Instagram с таким именем не найден.",
+        "uz": "Bunday nomli Instagram akkaunti topilmadi.",
+    },
+    "ig_private": {
+        "en": "🔒 This account is private, so only the profile picture is available.",
+        "ru": "🔒 Это закрытый аккаунт, доступна только фотография профиля.",
+        "uz": "🔒 Bu yopiq akkaunt, faqat profil rasmi mavjud.",
+    },
+    "ig_auth_error": {
+        "en": "Instagram is asking me to log in. The session has expired — please tell the admin to refresh the cookies.",
+        "ru": "Instagram требует входа. Сессия истекла — сообщите админу, чтобы он обновил cookies.",
+        "uz": "Instagram tizimga kirishni so'ramoqda. Sessiya muddati tugagan — administratorga cookie'larni yangilashini ayting.",
+    },
+    "ig_rate_limited": {
+        "en": "Instagram is rate-limiting me right now. Please try again in a few minutes.",
+        "ru": "Instagram сейчас ограничивает запросы. Попробуйте через несколько минут.",
+        "uz": "Instagram hozir so'rovlarni cheklayapti. Bir necha daqiqadan keyin urinib ko'ring.",
+    },
+    "ig_error": {
+        "en": "Couldn't reach Instagram right now. Please try again in a moment.",
+        "ru": "Сейчас не удалось связаться с Instagram. Попробуйте чуть позже.",
+        "uz": "Hozir Instagram bilan bog'lana olmadim. Birozdan keyin urinib ko'ring.",
+    },
+    "ig_no_posts": {
+        "en": "This account has no downloadable posts.",
+        "ru": "У этого аккаунта нет доступных для скачивания публикаций.",
+        "uz": "Bu akkauntda yuklab olsa bo'ladigan post yo'q.",
+    },
+    "ig_no_stories": {
+        "en": "No active stories right now.",
+        "ru": "Сейчас нет активных историй.",
+        "uz": "Hozircha faol story yo'q.",
+    },
+    "ig_fetching_posts": {
+        "en": "📥 Fetching the latest posts...",
+        "ru": "📥 Загружаю последние публикации...",
+        "uz": "📥 So'nggi postlar yuklanmoqda...",
+    },
+    "ig_fetching_stories": {
+        "en": "📸 Fetching stories...",
+        "ru": "📸 Загружаю истории...",
+        "uz": "📸 Story'lar yuklanmoqda...",
+    },
+    "ig_fetching_pic": {
+        "en": "🖼 Fetching the profile picture...",
+        "ru": "🖼 Загружаю фото профиля...",
+        "uz": "🖼 Profil rasmi yuklanmoqda...",
+    },
+    "ig_send_failed": {
+        "en": "Found the media but couldn't send it. Instagram links expire quickly — try again.",
+        "ru": "Медиа найдено, но отправить не удалось. Ссылки Instagram быстро истекают — попробуйте снова.",
+        "uz": "Media topildi, lekin yuborib bo'lmadi. Instagram havolalari tez eskiradi — qaytadan urinib ko'ring.",
+    },
+    "action_ig_posts": {
+        "en": "📥 Latest posts",
+        "ru": "📥 Последние публикации",
+        "uz": "📥 So'nggi postlar",
+    },
+    "action_ig_stories": {
+        "en": "📸 Stories",
+        "ru": "📸 Истории",
+        "uz": "📸 Story'lar",
+    },
+    "action_profile_pic": {
+        "en": "🖼 Profile picture (HD)",
+        "ru": "🖼 Фото профиля (HD)",
+        "uz": "🖼 Profil rasmi (HD)",
+    },
+    "ig_followers_label": {"en": "Followers", "ru": "Подписчики", "uz": "Obunachilar"},
+    "ig_following_label": {"en": "Following", "ru": "Подписки", "uz": "Obunalari"},
+    "ig_posts_label": {"en": "Posts", "ru": "Публикации", "uz": "Postlar"},
     "not_identified": {
         "en": "Sorry, I couldn't identify the movie from this. Try a clearer screenshot or video.",
         "ru": "Извините, не удалось определить фильм. Попробуйте более четкий скриншот или видео.",

@@ -3,16 +3,26 @@ import logging
 import os
 import re
 import tempfile
+from html import escape
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, FSInputFile, Message, User as TgUser
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    FSInputFile,
+    InputMediaPhoto,
+    InputMediaVideo,
+    Message,
+    User as TgUser,
+)
 from sqlalchemy import select
 
 from bot import link_store
 from bot.keyboards import (
     admin_panel_keyboard,
+    instagram_profile_keyboard,
     language_keyboard,
     link_action_keyboard,
     main_menu_keyboard,
@@ -21,7 +31,19 @@ from bot.keyboards import (
 from config import ADMIN_IDS
 from database.database import get_session
 from database.models import SearchHistory
-from services import cache_service, image_service, openai_service, verifier, video_service
+from services import (
+    cache_service,
+    image_service,
+    instagram_service,
+    openai_service,
+    verifier,
+    video_service,
+)
+from services.instagram_service import (
+    InstagramAuthError,
+    ProfileNotFoundError,
+    RateLimitedError,
+)
 from services.video_service import VideoTooLongError, YouTubeBlockedError
 from utils.helpers import (
     FREE_DAILY_LIMIT,
@@ -56,8 +78,19 @@ VIDEO_LINK_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Deliberately loose: it also matches instagram.com/p/... which is a post, not a
+# profile. Reel/post links are routed by VIDEO_LINK_PATTERN first (its handler is
+# registered earlier), and extract_username rejects the reserved paths anyway.
+INSTAGRAM_PROFILE_TRIGGER = re.compile(
+    r"(?:https?://)?(?:www\.)?instagram\.com/(?:stories/)?[A-Za-z0-9._]{1,30}/?"
+    r"|^@[A-Za-z0-9._]{1,30}$",
+    re.IGNORECASE,
+)
+
 ADMIN_MAX_LINK_DURATION_SEC = 24 * 3600
 TG_CAPTION_LIMIT = 1024
+# Telegram sends albums in groups of at most 10 items.
+TG_MEDIA_GROUP_LIMIT = 10
 # Bot API refuses uploads above this, and it rejects them only after the whole
 # file has been pushed -- so check the size locally before sending.
 TG_UPLOAD_LIMIT_BYTES = 50 * 1024 * 1024
@@ -590,3 +623,200 @@ async def _identify_link_movie(callback: CallbackQuery, url: str, lang: str, is_
 
     await status_msg.delete()
     await _deliver_result(callback.message, callback.from_user, analysis, lang, source)
+
+
+def _format_profile(profile: dict, lang: str) -> str:
+    # The bot sends with parse_mode=HTML, and bios routinely contain < & > --
+    # unescaped they make Telegram reject the whole message.
+    header = f"👤 <b>@{escape(profile['username'])}</b>"
+    if profile.get("is_verified"):
+        header += " ☑️"
+    if profile.get("is_private"):
+        header += " 🔒"
+
+    lines = [header]
+    if profile.get("full_name"):
+        lines.append(escape(profile["full_name"]))
+
+    # Counts come from a separately throttled endpoint, so they may be absent.
+    stats = [
+        (t("ig_posts_label", lang), profile.get("posts_count")),
+        (t("ig_followers_label", lang), profile.get("followers")),
+        (t("ig_following_label", lang), profile.get("following")),
+    ]
+    shown = [f"{label}: {value:,}" for label, value in stats if value is not None]
+    if shown:
+        lines.append("")
+        lines.append("   ".join(shown))
+
+    if profile.get("biography"):
+        lines.append("")
+        lines.append(escape(profile["biography"]))
+    if profile.get("external_url"):
+        lines.append(escape(profile["external_url"]))
+    if profile.get("is_private"):
+        lines.append("")
+        lines.append(t("ig_private", lang))
+
+    text = "\n".join(lines)
+    return text if len(text) <= TG_CAPTION_LIMIT else text[: TG_CAPTION_LIMIT - 1] + "…"
+
+
+@router.message(F.text.regexp(INSTAGRAM_PROFILE_TRIGGER))
+async def handle_instagram_profile(message: Message) -> None:
+    """Profile link or bare @handle -> profile card plus download actions."""
+    username = instagram_service.extract_username(message.text)
+    if not username:
+        return
+
+    async with get_session() as session:
+        user = await get_or_create_user(
+            session, message.from_user.id, message.from_user.username, message.from_user.language_code
+        )
+        lang = user.language
+
+    status_msg = await message.answer(t("ig_looking_up", lang, username=username))
+    try:
+        profile = await instagram_service.fetch_profile(username)
+    except ProfileNotFoundError:
+        await status_msg.edit_text(t("ig_profile_not_found", lang))
+        return
+    except InstagramAuthError:
+        logger.warning("Instagram cookies rejected while looking up %s", username, exc_info=True)
+        await status_msg.edit_text(t("ig_auth_error", lang))
+        return
+    except RateLimitedError:
+        logger.info("Instagram throttled the lookup of @%s", username)
+        await status_msg.edit_text(t("ig_rate_limited", lang))
+        return
+    except Exception:
+        logger.exception("Instagram profile lookup failed for %s", username)
+        await status_msg.edit_text(t("ig_error", lang))
+        return
+
+    # The avatar URL is short-lived, so the callbacks re-fetch the profile rather
+    # than parking the URL here; only the stable id and handle are carried.
+    token = link_store.put(f"{profile['id']}|{profile['username']}")
+    keyboard = instagram_profile_keyboard(token, lang, profile["is_private"])
+    caption = _format_profile(profile, lang)
+
+    await status_msg.delete()
+    if profile.get("profile_pic"):
+        blobs = await instagram_service.download_media([profile["profile_pic"]])
+        if blobs and blobs[0]:
+            try:
+                await message.answer_photo(
+                    BufferedInputFile(blobs[0], filename=f"{profile['username']}.jpg"),
+                    caption=caption,
+                    reply_markup=keyboard,
+                )
+                return
+            except TelegramBadRequest:
+                logger.warning("Avatar send failed; falling back to text", exc_info=True)
+    await message.answer(caption, reply_markup=keyboard)
+
+
+async def _send_media_batch(message: Message, media: list[dict], username: str) -> bool:
+    """Download and send items as albums. Returns False when nothing got through."""
+    blobs = await instagram_service.download_media([m["url"] for m in media])
+    items = [(m, b) for m, b in zip(media, blobs) if b]
+    if not items:
+        return False
+
+    sent = False
+    for start in range(0, len(items), TG_MEDIA_GROUP_LIMIT):
+        group = []
+        for i, (item, blob) in enumerate(items[start : start + TG_MEDIA_GROUP_LIMIT]):
+            ext = "mp4" if item["type"] == "video" else "jpg"
+            file = BufferedInputFile(blob, filename=f"{username}_{start + i + 1}.{ext}")
+            # Telegram shows only the first caption of an album; escaped because
+            # the bot's default parse mode is HTML.
+            caption = escape(item.get("caption") or "")[:TG_CAPTION_LIMIT] if i == 0 else None
+            cls = InputMediaVideo if item["type"] == "video" else InputMediaPhoto
+            group.append(cls(media=file, caption=caption))
+        try:
+            await message.answer_media_group(group)
+            sent = True
+        except TelegramBadRequest:
+            logger.warning("Album send failed for @%s; sending one by one", username, exc_info=True)
+            for item, blob in items[start : start + TG_MEDIA_GROUP_LIMIT]:
+                ext = "mp4" if item["type"] == "video" else "jpg"
+                file = BufferedInputFile(blob, filename=f"{username}.{ext}")
+                try:
+                    if item["type"] == "video":
+                        await message.answer_video(file)
+                    else:
+                        await message.answer_photo(file)
+                    sent = True
+                except TelegramBadRequest:
+                    logger.warning("Single media send failed for @%s", username, exc_info=True)
+    return sent
+
+
+@router.callback_query(F.data.startswith("ig:"))
+async def cb_instagram_action(callback: CallbackQuery) -> None:
+    _, action, token = callback.data.split(":", 2)
+
+    async with get_session() as session:
+        user = await get_or_create_user(
+            session, callback.from_user.id, callback.from_user.username, callback.from_user.language_code
+        )
+        lang = user.language
+
+    payload = link_store.get(token)
+    if not payload:
+        await callback.message.answer(t("link_expired", lang))
+        await callback.answer()
+        return
+
+    status_key = {
+        "posts": "ig_fetching_posts",
+        "stories": "ig_fetching_stories",
+        "pic": "ig_fetching_pic",
+    }.get(action)
+    if not status_key:  # a button from an older build of the bot
+        await callback.answer()
+        return
+
+    user_id, username = payload.split("|", 1)
+    await callback.answer()
+    status_msg = await callback.message.answer(t(status_key, lang))
+
+    try:
+        if action == "pic":
+            # Re-fetched because the avatar URL from the original lookup has expired.
+            profile = await instagram_service.fetch_profile(username)
+            media = (
+                [{"type": "photo", "url": profile["profile_pic"], "caption": f"@{username}"}]
+                if profile.get("profile_pic")
+                else []
+            )
+            empty_key = "ig_error"
+        elif action == "posts":
+            media = await instagram_service.fetch_posts(username)
+            empty_key = "ig_no_posts"
+        else:
+            media = await instagram_service.fetch_stories(user_id)
+            empty_key = "ig_no_stories"
+    except InstagramAuthError:
+        logger.warning("Instagram cookies rejected on %s for @%s", action, username, exc_info=True)
+        await status_msg.edit_text(t("ig_auth_error", lang))
+        return
+    except RateLimitedError:
+        logger.info("Instagram throttled %s for @%s", action, username)
+        await status_msg.edit_text(t("ig_rate_limited", lang))
+        return
+    except Exception:
+        logger.exception("Instagram %s fetch failed for @%s", action, username)
+        await status_msg.edit_text(t("ig_error", lang))
+        return
+
+    if not media:
+        await status_msg.edit_text(t(empty_key, lang))
+        return
+
+    sent = await _send_media_batch(callback.message, media, username)
+    if sent:
+        await status_msg.delete()
+    else:
+        await status_msg.edit_text(t("ig_send_failed", lang))

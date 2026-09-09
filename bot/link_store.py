@@ -1,7 +1,8 @@
-"""Short-lived token -> URL map for link action buttons.
+"""Short-lived token -> payload map for inline action buttons.
 
-Telegram caps callback_data at 64 bytes, which a full YouTube/Instagram URL can
-overrun, so the link is parked here and only an opaque token travels in the button.
+Telegram caps callback_data at 64 bytes, which a full YouTube/Instagram URL (or an
+Instagram user id plus handle) can overrun, so the payload is parked here and only
+an opaque token travels in the button.
 """
 
 import secrets
