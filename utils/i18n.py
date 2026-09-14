@@ -225,6 +225,41 @@ TEXTS: dict[str, dict[str, str]] = {
         "ru": "📸 Истории",
         "uz": "📸 Story'lar",
     },
+    "action_ig_stories_active": {
+        "en": "📸 Stories · Active now 🔴",
+        "ru": "📸 Истории · Сейчас активна 🔴",
+        "uz": "📸 Story'lar · Hozir faol 🔴",
+    },
+    "ig_changes_header": {
+        "en": "🆕 Changed since last check:",
+        "ru": "🆕 Изменилось с прошлой проверки:",
+        "uz": "🆕 Oldingi tekshiruvdan beri o'zgarganlar:",
+    },
+    "ig_diff_avatar": {
+        "en": "🖼 Profile picture changed",
+        "ru": "🖼 Изменилось фото профиля",
+        "uz": "🖼 Profil rasmi almashtirilgan",
+    },
+    "ig_diff_name": {
+        "en": "✏️ Display name changed",
+        "ru": "✏️ Изменилось отображаемое имя",
+        "uz": "✏️ Ismi (full name) o'zgargan",
+    },
+    "ig_diff_bio": {
+        "en": "📝 Bio changed",
+        "ru": "📝 Изменилось описание (bio)",
+        "uz": "📝 Bio (tavsif) o'zgargan",
+    },
+    "ig_diff_highlights_up": {
+        "en": "✨ New highlight added",
+        "ru": "✨ Добавлен новый хайлайт",
+        "uz": "✨ Yangi highlight qo'shilgan",
+    },
+    "ig_diff_highlights_down": {
+        "en": "🗑 A highlight was removed",
+        "ru": "🗑 Хайлайт был удалён",
+        "uz": "🗑 Highlight o'chirilgan",
+    },
     "action_profile_pic": {
         "en": "🖼 Profile picture (HD)",
         "ru": "🖼 Фото профиля (HD)",

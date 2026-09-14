@@ -35,6 +35,7 @@ from services import (
     cache_service,
     image_service,
     instagram_service,
+    instagram_snapshot,
     openai_service,
     verifier,
     video_service,
@@ -625,7 +626,16 @@ async def _identify_link_movie(callback: CallbackQuery, url: str, lang: str, is_
     await _deliver_result(callback.message, callback.from_user, analysis, lang, source)
 
 
-def _format_profile(profile: dict, lang: str) -> str:
+_DIFF_KEYS = {
+    "avatar": "ig_diff_avatar",
+    "name": "ig_diff_name",
+    "bio": "ig_diff_bio",
+    "highlights_up": "ig_diff_highlights_up",
+    "highlights_down": "ig_diff_highlights_down",
+}
+
+
+def _format_profile(profile: dict, lang: str, changes: list[str] | None = None) -> str:
     # The bot sends with parse_mode=HTML, and bios routinely contain < & > --
     # unescaped they make Telegram reject the whole message.
     header = f"👤 <b>@{escape(profile['username'])}</b>"
@@ -657,6 +667,14 @@ def _format_profile(profile: dict, lang: str) -> str:
     if profile.get("is_private"):
         lines.append("")
         lines.append(t("ig_private", lang))
+
+    if changes:
+        lines.append("")
+        lines.append(t("ig_changes_header", lang))
+        for change in changes:
+            key = _DIFF_KEYS.get(change)
+            if key:
+                lines.append("• " + t(key, lang))
 
     text = "\n".join(lines)
     return text if len(text) <= TG_CAPTION_LIMIT else text[: TG_CAPTION_LIMIT - 1] + "…"
@@ -697,22 +715,29 @@ async def handle_instagram_profile(message: Message) -> None:
     # The avatar URL is short-lived, so the callbacks re-fetch the profile rather
     # than parking the URL here; only the stable id and handle are carried.
     token = link_store.put(f"{profile['id']}|{profile['username']}")
-    keyboard = instagram_profile_keyboard(token, lang, profile["is_private"])
-    caption = _format_profile(profile, lang)
 
-    await status_msg.delete()
+    avatar_bytes = None
     if profile.get("profile_pic"):
         blobs = await instagram_service.download_media([profile["profile_pic"]])
-        if blobs and blobs[0]:
-            try:
-                await message.answer_photo(
-                    BufferedInputFile(blobs[0], filename=f"{profile['username']}.jpg"),
-                    caption=caption,
-                    reply_markup=keyboard,
-                )
-                return
-            except TelegramBadRequest:
-                logger.warning("Avatar send failed; falling back to text", exc_info=True)
+        avatar_bytes = blobs[0] if blobs else None
+
+    async with get_session() as session:
+        changes = await instagram_snapshot.diff_and_store(session, profile, avatar_bytes)
+
+    keyboard = instagram_profile_keyboard(token, lang, profile["is_private"], profile.get("has_story"))
+    caption = _format_profile(profile, lang, changes)
+
+    await status_msg.delete()
+    if avatar_bytes:
+        try:
+            await message.answer_photo(
+                BufferedInputFile(avatar_bytes, filename=f"{profile['username']}.jpg"),
+                caption=caption,
+                reply_markup=keyboard,
+            )
+            return
+        except TelegramBadRequest:
+            logger.warning("Avatar send failed; falling back to text", exc_info=True)
     await message.answer(caption, reply_markup=keyboard)
 
 
@@ -784,8 +809,9 @@ async def cb_instagram_action(callback: CallbackQuery) -> None:
 
     try:
         if action == "pic":
-            # Re-fetched because the avatar URL from the original lookup has expired.
-            profile = await instagram_service.fetch_profile(username)
+            # Re-fetched because the avatar URL from the original lookup has expired;
+            # the story/highlight extras aren't needed for just the picture.
+            profile = await instagram_service.fetch_profile(username, include_extras=False)
             media = (
                 [{"type": "photo", "url": profile["profile_pic"], "caption": f"@{username}"}]
                 if profile.get("profile_pic")

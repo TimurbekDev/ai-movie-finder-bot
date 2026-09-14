@@ -35,6 +35,28 @@ class SearchHistory(Base):
     user: Mapped["User"] = relationship(back_populates="searches")
 
 
+class InstagramSnapshot(Base):
+    """Last-seen state of a looked-up Instagram profile.
+
+    Kept so the next lookup of the same username can point out what actually
+    changed (avatar, bio, highlight count) instead of just reprinting the same
+    numbers. One row per handle, overwritten on every fresh lookup.
+    """
+
+    __tablename__ = "instagram_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(30), unique=True, index=True)
+    full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    biography: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    avatar_phash: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    highlight_count: Mapped[int | None] = mapped_column(nullable=True)
+    is_private: Mapped[bool] = mapped_column(default=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class IdentificationCache(Base):
     """Perceptual-hash dedup cache: maps near-identical images to a prior result.
 

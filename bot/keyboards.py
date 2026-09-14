@@ -27,18 +27,26 @@ def link_action_keyboard(token: str, lang: str) -> InlineKeyboardMarkup:
     )
 
 
-def instagram_profile_keyboard(token: str, lang: str, is_private: bool) -> InlineKeyboardMarkup:
+def instagram_profile_keyboard(
+    token: str, lang: str, is_private: bool, has_story: bool | None = None
+) -> InlineKeyboardMarkup:
     """Actions on a looked-up profile. A private account exposes nothing but the
-    avatar, so the post/story buttons are left off rather than offered and refused."""
+    avatar, so the post/story buttons are left off rather than offered and refused.
+
+    has_story is None when the presence check couldn't be made (throttled) --
+    the button then falls back to the plain "Stories" label rather than
+    claiming either way.
+    """
     rows = [[InlineKeyboardButton(text=t("action_profile_pic", lang), callback_data=f"ig:pic:{token}")]]
     if not is_private:
         rows.insert(
             0,
             [InlineKeyboardButton(text=t("action_ig_posts", lang), callback_data=f"ig:posts:{token}")],
         )
+        stories_label = t("action_ig_stories_active", lang) if has_story else t("action_ig_stories", lang)
         rows.insert(
             1,
-            [InlineKeyboardButton(text=t("action_ig_stories", lang), callback_data=f"ig:stories:{token}")],
+            [InlineKeyboardButton(text=stories_label, callback_data=f"ig:stories:{token}")],
         )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

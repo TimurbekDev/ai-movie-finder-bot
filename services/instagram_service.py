@@ -187,9 +187,46 @@ def _web_profile_info_sync(username: str) -> dict:
     return user
 
 
-def _fetch_profile_sync(username: str) -> dict:
-    """Profile card, best-effort: identity always, bio and counts when available."""
+def _has_active_story_sync(user_id: str) -> bool | None:
+    """Whether the account currently has a live story.
+
+    Reuses the same reels_media endpoint the "Stories" button fetches from,
+    rather than the old has_public_story GraphQL field, which needs its own
+    query-hash call and has been unreliable since Instagram's 2019 privacy
+    changes. None means the check itself failed (throttled, etc.) -- the
+    caller falls back to a neutral label rather than claiming "no story".
+    """
+    try:
+        return bool(_fetch_stories_sync(user_id, limit=1))
+    except InstagramError:
+        logger.info("Story-presence check failed for user id %s", user_id, exc_info=True)
+        return None
+
+
+def _fetch_highlight_count_sync(user_id: str) -> int | None:
+    """Number of saved story highlights ("highlight reels" on the profile).
+
+    Best-effort: this tray endpoint is throttled independently of the rest,
+    so a failure here should not take down the whole profile card.
+    """
+    try:
+        data = _api_get(f"https://www.instagram.com/api/v1/highlights/{user_id}/highlights_tray/")
+        return len(data.get("tray") or [])
+    except InstagramError:
+        logger.info("Highlight-count check failed for user id %s", user_id, exc_info=True)
+        return None
+
+
+def _fetch_profile_sync(username: str, include_extras: bool = True) -> dict:
+    """Profile card, best-effort: identity always, bio and counts when available.
+
+    include_extras controls the two extra requests (active-story check,
+    highlight count) used for the change-tracking card. Callers that only
+    need identity (e.g. re-fetching the avatar for a callback) skip them.
+    """
     profile = _topsearch_sync(username)
+    profile["has_story"] = None
+    profile["highlight_count"] = None
     try:
         user = _web_profile_info_sync(profile["username"])
     except InstagramError as e:
@@ -213,6 +250,11 @@ def _fetch_profile_sync(username: str) -> dict:
             or profile["profile_pic"],
         }
     )
+
+    if include_extras and not profile["is_private"]:
+        profile["has_story"] = _has_active_story_sync(profile["id"])
+        profile["highlight_count"] = _fetch_highlight_count_sync(profile["id"])
+
     return profile
 
 
@@ -336,8 +378,8 @@ def _download_all_sync(urls: list[str]) -> list[bytes | None]:
         return list(pool.map(_download_sync, urls))
 
 
-async def fetch_profile(username: str) -> dict:
-    return await asyncio.to_thread(_fetch_profile_sync, username)
+async def fetch_profile(username: str, include_extras: bool = True) -> dict:
+    return await asyncio.to_thread(_fetch_profile_sync, username, include_extras)
 
 
 async def fetch_posts(username: str, limit: int = MAX_POSTS) -> list[dict]:
